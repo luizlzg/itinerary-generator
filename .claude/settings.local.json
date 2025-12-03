@@ -1,31 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch",
-      "WebFetch(domain:github.com)",
-      "Bash(tree:*)",
-      "WebFetch(domain:blog.langchain.com)",
-      "WebFetch(domain:python.langchain.com)",
-      "WebFetch(domain:docs.langchain.com)",
-      "Bash(python:*)",
-      "Bash(. venv/Scripts/activate)",
-      "Bash(git init:*)",
-      "Bash(gh repo create:*)",
-      "Bash(git add:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: LangGraph ReAct agent for European transportation\n\n- Complete LangGraph ReAct agent with LangChain 1.0\n- Real API integrations: Amadeus (flights), SNCF (trains), FlixBus (buses)\n- Multi-city route optimization (TSP solver)\n- Route analysis tool with cheapest/fastest recommendations\n- MCP filesystem integration for saving itineraries\n- Rich CLI interface with interactive prompts\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
-      "Bash(winget install:*)",
-      "Bash(gh auth login:*)",
-      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" auth login)",
-      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" repo create mcp-agent-transport --public --source=. --description \"LangGraph ReAct agent for finding European transportation routes (flights, trains, buses) with real API integrations\" --push)",
-      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" auth status)",
-      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" auth login --web)",
-      "Bash(git remote add:*)",
-      "Bash(git branch:*)",
-      "Bash(git push:*)",
-      "Bash(pip install:*)",
-      "Bash(langgraph:*)",
-      "Bash(timeout 10 . venv/Scripts/activate)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nAdd LangChain Agent Chat UI integration\n\n- Add LangGraph API server support via langgraph-cli\n- Create langgraph.json configuration file\n- Add pyproject.toml for package structure\n- Implement create_graph() factory function for API server\n- Fix blocking call issue (removed load_dotenv from create_graph)\n- Add CHAT_UI_SETUP.md with complete setup guide\n- Update README.md with Chat UI link\n- Add langgraph-cli to requirements.txt\n\nUsers can now interact with the agent through:\n1. Web browser at https://agentchat.vercel.app\n2. Local Chat UI (cloned from langchain-ai/agent-chat-ui)\n3. Existing CLI interface (main.py)\n\nServer runs at http://localhost:2024 with API docs at /docs\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit:*)",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []
