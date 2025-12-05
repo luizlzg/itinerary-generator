@@ -1,36 +1,11 @@
-"""Tools for the itinerary document generation agent."""
+"""Tools for the multi-agent itinerary generation graph."""
 import json
-import os
 from langchain_core.tools import tool
 from src.mcp_client.tavily_client import SimplifiedTavilySearch
 from src.mcp_client.docx_client import LocalDocxGenerator
 from src.utils.logger import LOGGER
-from typing import TypedDict, List, Optional, Dict, Any
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
-
-class ImageInfo(TypedDict):
-    id: str
-    descricao: str
-    url_regular: str
-
-class IngressoInfo(TypedDict):
-    titulo: str
-    conteudo: str
-    url: str
-
-class LinkInfo(TypedDict):
-    titulo: str
-    url: str
-
-class PasseioInfo(TypedDict):
-    nome: str
-    descricao: str
-    imagens: List[ImageInfo]
-    informacoes_ingresso: List[IngressoInfo]
-    links_uteis: List[LinkInfo]
-    custo_estimado: float
-    dia_numero: int  # Which day this passeio belongs to
 
 
 # Global clients (initialized on first use)
@@ -128,249 +103,6 @@ def calcular_distancia_entre_locais(
         }, ensure_ascii=False)
 
 
-@tool(return_direct=True)
-def gerar_documento_roteiro_por_dias(
-    titulo_documento: str,
-    passeios_dados: List[PasseioInfo],
-) -> str:
-    """
-    Gera um documento formatado com o roteiro de viagem organizado por dias.
-
-    IMPORTANTE: Este é o ÚLTIMO passo. Só chame esta função DEPOIS de ter pesquisado
-    informações e imagens para TODOS os passeios.
-
-    CRÍTICO: Esta função requer DOIS parâmetros OBRIGATÓRIOS:
-    1. titulo_documento (string)
-    2. passeios_dados (lista/array de objetos PasseioInfo)
-
-    Args:
-        titulo_documento: Título do roteiro (ex: "Roteiro de Viagem - Paris - 3 Dias")
-        passeios_dados: OBRIGATÓRIO - Lista/array de PasseioInfo com todos os passeios compilados.
-            Cada passeio DEVE ter o campo "dia_numero" preenchido (1, 2, 3, etc.)
-            Exemplo:
-            [
-                {"nome": "Torre Eiffel", "descricao": "...", "imagens": [...], "dia_numero": 1, "custo_estimado": 26.10, ...},
-                {"nome": "Louvre", "descricao": "...", "imagens": [...], "dia_numero": 1, "custo_estimado": 17.00, ...},
-                {"nome": "Versalhes", "descricao": "...", "imagens": [...], "dia_numero": 2, "custo_estimado": 19.50, ...}
-            ]
-
-    Returns:
-        JSON string com informações sobre o documento criado (caminho do arquivo)
-
-    NUNCA ESQUEÇA: Você DEVE passar passeios_dados como segundo parâmetro!
-    Chamada CORRETA:
-        gerar_documento_roteiro_por_dias(
-            titulo_documento="Roteiro Paris - 3 Dias",
-            passeios_dados=[{...}, {...}, {...}]
-        )
-
-    Chamada ERRADA (vai falhar):
-        gerar_documento_roteiro_por_dias(titulo_documento="Roteiro Paris - 3 Dias")
-    """
-    try:
-        if not passeios_dados or len(passeios_dados) == 0:
-            return json.dumps({
-                "error": "Lista de passeios está vazia!",
-                "sucesso": False
-            }, ensure_ascii=False)
-
-        LOGGER.info(f"Processing {len(passeios_dados)} passeios for document")
-
-        # Group passeios by day
-        passeios_por_dia = {}
-        for passeio in passeios_dados:
-            if not isinstance(passeio, dict):
-                LOGGER.warning(f"Passeio is not a dict: {type(passeio).__name__}")
-                continue
-
-            dia_numero = passeio.get("dia_numero", 1)
-            if dia_numero not in passeios_por_dia:
-                passeios_por_dia[dia_numero] = []
-            passeios_por_dia[dia_numero].append(passeio)
-
-        # Prepare content blocks for document
-        content_blocks = []
-        custo_total = 0
-
-        # Add each day
-        for dia_numero in sorted(passeios_por_dia.keys()):
-            passeios = passeios_por_dia[dia_numero]
-
-            # Add day heading
-            content_blocks.append({
-                "type": "heading",
-                "text": f"Dia {dia_numero}",
-                "level": 1
-            })
-
-            # Add each passeio under this day
-            for passeio in passeios:
-                nome = passeio.get("nome", "Passeio sem nome")
-                descricao = passeio.get("descricao", "")
-
-                LOGGER.info(f"Processing passeio: {nome} (Dia {dia_numero})")
-
-                # Add passeio as subheading
-                content_blocks.append({
-                    "type": "heading",
-                    "text": nome,
-                    "level": 2
-                })
-
-                # Add description
-                if descricao:
-                    content_blocks.append({
-                        "type": "paragraph",
-                        "text": descricao
-                    })
-
-                # Add images
-                imagens = passeio.get("imagens", [])
-                if not isinstance(imagens, list):
-                    imagens = []
-
-                for idx, img in enumerate(imagens):
-                    if not isinstance(img, dict):
-                        continue
-
-                    url = img.get("url_regular")
-                    if not url:
-                        continue
-
-                    content_blocks.append({
-                        "type": "image",
-                        "url": url,
-                        "id": img.get("id", f"img_{idx}")
-                    })
-
-                # Add ticket/cost info
-                info_ingresso = passeio.get("informacoes_ingresso", [])
-                if not isinstance(info_ingresso, list):
-                    info_ingresso = []
-
-                if info_ingresso:
-                    content_blocks.append({
-                        "type": "heading",
-                        "text": "Informações de Ingresso",
-                        "level": 3
-                    })
-
-                    for info in info_ingresso:
-                        if not isinstance(info, dict):
-                            continue
-
-                        conteudo = info.get('conteudo', '')
-                        if conteudo:
-                            content_blocks.append({
-                                "type": "paragraph",
-                                "text": f"• {conteudo}"
-                            })
-
-                        url = info.get("url")
-                        if url:
-                            content_blocks.append({
-                                "type": "paragraph",
-                                "text": f"Link: {url}"
-                            })
-
-                # Add useful links
-                links = passeio.get("links_uteis", [])
-                if not isinstance(links, list):
-                    links = []
-
-                if links:
-                    content_blocks.append({
-                        "type": "heading",
-                        "text": "Links Úteis",
-                        "level": 3
-                    })
-
-                    link_items = []
-                    for link in links:
-                        if isinstance(link, dict):
-                            titulo = link.get('titulo', 'Link')
-                            url = link.get('url', '')
-                            if url:
-                                link_items.append(f"{titulo}: {url}")
-
-                    if link_items:
-                        content_blocks.append({
-                            "type": "bullet_list",
-                            "items": link_items
-                        })
-
-                # Try to extract cost
-                custo = passeio.get("custo_estimado", 0)
-                if custo > 0:
-                    custo_total += custo
-
-            # Add spacing between days
-            content_blocks.append({
-                "type": "paragraph",
-                "text": ""
-            })
-
-        # Add cost summary
-        if custo_total > 0:
-            content_blocks.append({
-                "type": "heading",
-                "text": "Resumo de Custos",
-                "level": 1
-            })
-            content_blocks.append({
-                "type": "paragraph",
-                "text": f"Custo total estimado: €{custo_total:.2f}",
-                "bold": True
-            })
-
-        LOGGER.info(f"Prepared {len(content_blocks)} content blocks for document")
-
-        # Creating local DOCX
-        LOGGER.info("Creating local DOCX document...")
-        try:
-            generator = get_docx_generator()
-            LOGGER.info("DOCX generator initialized")
-
-            LOGGER.info(f"Calling create_document with {len(content_blocks)} blocks")
-            file_path = generator.create_document(
-                title=titulo_documento,
-                content_blocks=content_blocks
-            )
-
-            LOGGER.info(f"Document created successfully at: {file_path}")
-
-            if not file_path or not os.path.exists(file_path):
-                LOGGER.error(f"Document file does not exist: {file_path}")
-                return json.dumps({
-                    "error": f"Documento foi criado mas arquivo não foi encontrado: {file_path}",
-                    "sucesso": False
-                }, ensure_ascii=False)
-
-            num_dias = len(passeios_por_dia)
-            return json.dumps({
-                "sucesso": True,
-                "tipo": "docx_local",
-                "caminho_arquivo": file_path,
-                "mensagem": f"Documento DOCX criado localmente com {num_dias} dias: {file_path}"
-            }, ensure_ascii=False, indent=2)
-
-        except Exception as docx_error:
-            LOGGER.error(f"DOCX creation failed: {docx_error}", exc_info=True)
-            return json.dumps({
-                "error": f"Erro ao criar DOCX: {str(docx_error)}",
-                "sucesso": False,
-                "detalhes": str(docx_error)
-            }, ensure_ascii=False)
-
-    except Exception as e:
-        LOGGER.error(f"Document generation failed: {e}", exc_info=True) 
-        return json.dumps({
-            "error": f"Erro ao gerar documento: {str(e)}",
-            "sucesso": False,
-            "tipo_erro": type(e).__name__
-        }, ensure_ascii=False)
-
-
 @tool
 def pesquisar_informacoes_passeio(
     query: str,
@@ -393,9 +125,19 @@ def pesquisar_informacoes_passeio(
         }, ensure_ascii=False)
 
     try:
-        search_results = client.search(query, max_results=3)
+        # Use advanced search with more comprehensive results and raw content
+        search_results = client.search(
+            query,
+            max_results=5,
+            search_depth="advanced",
+            include_raw_content=True,
+            chunks_per_source=1
+        )
 
-        return json.dumps(search_results.get("results", []), ensure_ascii=False, indent=2)
+        tool_output = search_results.get("results", [])
+        tool_output = [{"url": res["url"], "title": res["title"], "content": res.get("raw_content", "")} for res in tool_output]
+
+        return json.dumps(tool_output, ensure_ascii=False, indent=2)
 
     except Exception as e:
         return json.dumps({
@@ -406,7 +148,7 @@ def pesquisar_informacoes_passeio(
 @tool
 def buscar_imagens_passeio(
     query: str,
-    quantidade: int = 3
+    quantidade: int = 5
 ) -> str:
     """
     Busca imagens de alta qualidade de um passeio turístico usando Tavily.
@@ -425,8 +167,14 @@ def buscar_imagens_passeio(
         }, ensure_ascii=False)
 
     try:
-        # Search with images enabled
-        search_data = client.search(query, max_results=3, include_images=True)
+        # Search with images enabled and get full context for descriptions
+        search_data = client.search(
+            query,
+            max_results=5,
+            search_depth="advanced",
+            include_images=True,
+            include_image_descriptions=True
+        )
 
         images = search_data.get("images", [])
 
@@ -435,12 +183,13 @@ def buscar_imagens_passeio(
             "imagens": []
         }
 
+
         # Tavily returns image URLs as strings
-        for image_url in images[:quantidade]:
+        for img_object in images[:quantidade]:
+
             result["imagens"].append({
-                "url_regular": image_url,
-                "url_pequena": image_url,
-                "descricao": f"Imagem relacionada a '{query}'",
+                "url_regular": img_object["url"],
+                "descricao": img_object["description"],
             })
 
         return json.dumps(result, ensure_ascii=False, indent=2)
@@ -452,10 +201,17 @@ def buscar_imagens_passeio(
 
 
 
-# List of all tools for the itinerary agent
-ITINERARY_TOOLS = [
+# ============================================================================
+# Tool Lists for Each Agent
+# ============================================================================
+
+# First agent (day organizer) - only needs distance calculation
+DAY_ORGANIZER_TOOLS = [
+    calcular_distancia_entre_locais,
+]
+
+# Second agent (passeio researcher) - needs search and images
+PASSEIO_RESEARCHER_TOOLS = [
     pesquisar_informacoes_passeio,
     buscar_imagens_passeio,
-    calcular_distancia_entre_locais,
-    gerar_documento_roteiro_por_dias,
 ]

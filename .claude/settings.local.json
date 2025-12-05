@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(git commit:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []

@@ -139,15 +139,25 @@ class SimplifiedTavilySearch:
         self,
         query: str,
         max_results: int = 5,
-        include_images: bool = False
+        search_depth: str = "basic",
+        include_images: bool = False,
+        include_raw_content: bool = False,
+        include_image_descriptions: bool = False,
+        chunks_per_source: int = 3,
+        **kwargs
     ) -> Dict[str, Any]:
         """
         Search using Tavily API directly.
 
         Args:
             query: Search query
-            max_results: Maximum results
+            max_results: Maximum results (default: 5)
+            search_depth: "basic" or "advanced" (default: "basic")
             include_images: If True, include image URLs
+            include_raw_content: If True, include full page content
+            include_image_descriptions: If True, include image descriptions
+            chunks_per_source: Number of content chunks per source (default: 3)
+            **kwargs: Additional parameters to pass to Tavily API
 
         Returns:
             Dictionary with 'results' and 'images' keys
@@ -155,15 +165,27 @@ class SimplifiedTavilySearch:
         try:
             import requests
 
+            # Build request payload
+            payload = {
+                "api_key": self.api_key,
+                "query": query,
+                "max_results": max_results,
+                "search_depth": search_depth,
+                "include_images": include_images,
+                "include_raw_content": include_raw_content,
+                "include_image_descriptions": include_image_descriptions,
+            }
+
+            # Add chunks_per_source only if include_raw_content is True
+            if include_raw_content:
+                payload["chunks_per_source"] = chunks_per_source
+
+            # Add any additional kwargs
+            payload.update(kwargs)
+
             response = requests.post(
                 "https://api.tavily.com/search",
-                json={
-                    "api_key": self.api_key,
-                    "query": query,
-                    "max_results": max_results,
-                    "search_depth": "basic",
-                    "include_images": include_images
-                },
+                json=payload,
                 timeout=30
             )
 
