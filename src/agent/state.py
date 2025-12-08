@@ -1,6 +1,8 @@
 """State schema and TypedDict models for the multi-agent itinerary graph."""
-from typing import TypedDict, Annotated, List, Dict, Any, Optional
+from typing import TypedDict, Annotated, List, Dict, Any
 import operator
+import numpy
+from src.utils.utilities import merge_dicts, replace_value
 
 
 # ============================================================================
@@ -22,8 +24,8 @@ class OrganizedItinerary(TypedDict):
 class ImageInfo(TypedDict):
     """Image information for a passeio."""
     id: str
-    descricao: str
     url_regular: str
+    caption: str  # Agent-provided caption describing what this image shows
 
 
 class IngressoInfo(TypedDict):
@@ -67,6 +69,12 @@ class GraphState(TypedDict):
     user_input: str
     numero_dias: int
     preferences_input: str  # User preferences including age, organization preferences, etc.
+
+    # First agent - coordinate extraction state
+    # Using merge_dicts to properly merge coordinate updates from multiple extrair_coordenadas calls
+    coordenadas_atracoes: Annotated[Dict[str, Dict[str, float]], merge_dicts]  # {nome_atracao: {lat: float, lon: float}}
+    all_coordenadas_obtidas: Annotated[bool, replace_value]  # True when all attractions have coordinates
+    clusters: numpy.ndarray  # Cluster labels for each attraction
 
     # First agent output (day organizer)
     document_title: str  # Generated document title

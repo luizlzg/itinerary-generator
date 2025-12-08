@@ -31,3 +31,10 @@ Pillow>=10.0.0  # For image handling in documents
 
 # Geographic distance calculation
 geopy>=2.4.0
+
+scikit-learn==1.7.2
+numpy==2.3.5
+geopandas==1.1.1
+contextily==1.7.0
+shapely==2.1.2
+matplotlib==3.10.7

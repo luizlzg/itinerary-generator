@@ -1,11 +1,16 @@
 """Tools for the multi-agent itinerary generation graph."""
 import json
-from langchain_core.tools import tool
+from langchain.tools import tool, ToolRuntime
+from langchain.messages import ToolMessage
+from typing_extensions import Annotated
+from langgraph.types import Command
 from src.mcp_client.tavily_client import SimplifiedTavilySearch
 from src.mcp_client.docx_client import LocalDocxGenerator
 from src.utils.logger import LOGGER
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
+from sklearn.cluster import KMeans
+import numpy as np
 
 
 # Global clients (initialized on first use)
@@ -42,78 +47,17 @@ def get_docx_generator():
     return _docx_generator
 
 
-@tool
-def calcular_distancia_entre_locais(
-    local1: str,
-    local2: str,
-) -> str:
-    """
-    Calcula a distância geográfica entre dois locais (passeios/atrações).
-    Use esta ferramenta para agrupar passeios por proximidade geográfica.
-
-    Args:
-        local1: Nome completo do primeiro local (ex: "Torre Eiffel, Paris, França")
-        local2: Nome completo do segundo local (ex: "Museu do Louvre, Paris, França")
-
-    Returns:
-        JSON string com a distância em quilômetros ou erro
-    """
-    geolocator = get_geolocator()
-
-    try:
-        # Geocode both locations
-        LOGGER.info(f"Geocoding local1: {local1}")
-        location1 = geolocator.geocode(local1, timeout=10)
-
-        if not location1:
-            return json.dumps({
-                "error": f"Não foi possível encontrar as coordenadas de: {local1}",
-                "distancia_km": None
-            }, ensure_ascii=False)
-
-        LOGGER.info(f"Geocoding local2: {local2}")
-        location2 = geolocator.geocode(local2, timeout=10)
-
-        if not location2:
-            return json.dumps({
-                "error": f"Não foi possível encontrar as coordenadas de: {local2}",
-                "distancia_km": None
-            }, ensure_ascii=False)
-
-        # Calculate distance
-        coords1 = (location1.latitude, location1.longitude)
-        coords2 = (location2.latitude, location2.longitude)
-        distance = geodesic(coords1, coords2).kilometers
-
-        LOGGER.info(f"Distance between {local1} and {local2}: {distance:.2f} km")
-
-        return json.dumps({
-            "local1": local1,
-            "local2": local2,
-            "distancia_km": round(distance, 2),
-            "coords1": {"lat": location1.latitude, "lon": location1.longitude},
-            "coords2": {"lat": location2.latitude, "lon": location2.longitude}
-        }, ensure_ascii=False, indent=2)
-
-    except Exception as e:
-        LOGGER.error(f"Error calculating distance: {e}", exc_info=True)
-        return json.dumps({
-            "error": f"Erro ao calcular distância: {str(e)}",
-            "distancia_km": None
-        }, ensure_ascii=False)
-
 
 @tool
 def pesquisar_informacoes_passeio(
     query: str,
 ) -> str:
     """
-    Ferramenta para pesquisar informações turísticas sobre um passeio.
-    Você é obrigatório usar esta ferramenta para obter detalhes sobre o passeio,
-    como descrição, horários, preços de ingressos, dicas úteis, etc.
+    Ferramenta de busca na web para pesquisar informações.
+    Use esta ferramenta quando precisar buscar informações online.
 
     Args:
-        query: requisição de pesquisa (nome do passeio, cidade, custo, ingresso, etc.)
+        query: requisição de pesquisa
 
     Returns:
         JSON string com os resultados da pesquisa
@@ -130,12 +74,12 @@ def pesquisar_informacoes_passeio(
             query,
             max_results=5,
             search_depth="advanced",
-            include_raw_content=True,
+            include_raw_content=False,
             chunks_per_source=1
         )
 
         tool_output = search_results.get("results", [])
-        tool_output = [{"url": res["url"], "title": res["title"], "content": res.get("raw_content", "")} for res in tool_output]
+        tool_output = [{"url": res["url"], "title": res["title"], "content": res.get("content", "")} for res in tool_output]
 
         return json.dumps(tool_output, ensure_ascii=False, indent=2)
 
@@ -199,15 +143,172 @@ def buscar_imagens_passeio(
             "error": f"Erro ao buscar imagens: {str(e)}",
         }, ensure_ascii=False)
 
+@tool
+def extrair_coordenadas(
+    nomes_atracoes: list[str],
+    runtime: ToolRuntime,
+) -> Command:
+    """
+    Extrai coordenadas geográficas de uma lista de atrações usando Nominatim.
+
+    IMPORTANTE: Esta ferramenta atualiza o estado do grafo com as coordenadas obtidas.
+    Os nomes que você fornecer serão usados EXATAMENTE como estão na API de geocoding.
+    Se alguns nomes falharem, a ferramenta retornará quais falharam para você tentar novamente.
+
+    Args:
+        nomes_atracoes: Lista com os nomes das atrações (ex: ["Torre Eiffel, Paris", "Museu do Louvre, Paris"])
+
+    Returns:
+        Command object that updates state with coordinates and returns success/failure info
+    """
+    geolocator = get_geolocator()
+
+    # Get current coordinates from state
+    current_coordenadas = runtime.state.get("coordenadas_atracoes", {})
+
+    # Process new coordinates
+    new_coordenadas = {}
+    falhas = []
+
+    for nome in nomes_atracoes:
+        try:
+            LOGGER.info(f"Geocoding: {nome}")
+            location = geolocator.geocode(nome, timeout=10)
+
+            if location:
+                new_coordenadas[nome] = {
+                    "lat": location.latitude,
+                    "lon": location.longitude
+                }
+                LOGGER.info(f"✓ Sucesso: {nome} -> ({location.latitude}, {location.longitude})")
+            else:
+                falhas.append(nome)
+                LOGGER.warning(f"✗ Falha: Não foi possível encontrar coordenadas para '{nome}'")
+
+        except Exception as e:
+            falhas.append(nome)
+            LOGGER.error(f"✗ Erro ao geocodificar '{nome}': {e}")
+
+    # Merge new coordinates with existing ones
+    coordenadas_atracoes = {**current_coordenadas, **new_coordenadas}
+
+    # Check if all coordinates are obtained (no failures)
+    all_coordenadas_obtidas = len(falhas) == 0
+
+    # Create message for the agent
+    message_content = json.dumps({
+        "falhas": falhas,
+        "total_sucesso": len(new_coordenadas),
+        "total_falhas": len(falhas),
+    }, ensure_ascii=False, indent=2)
+
+    # Return Command to update state
+    return Command(
+        update={
+            "coordenadas_atracoes": coordenadas_atracoes,
+            "all_coordenadas_obtidas": all_coordenadas_obtidas,
+            "messages": [ToolMessage(content=message_content, tool_call_id=runtime.tool_call_id)]
+        }
+    )
+
+
+@tool
+def agrupar_atracoes_kmeans(
+    runtime: ToolRuntime,
+) -> str:
+    """
+    Agrupa atrações por dia usando algoritmo K-means baseado em proximidade geográfica.
+    Calcula as distâncias entre membros de cada cluster.
+
+    IMPORTANTE: Esta ferramenta lê o número de dias e as coordenadas diretamente do estado do grafo.
+    Certifique-se de que todas as coordenadas foram obtidas antes de chamar esta ferramenta.
+
+    Returns:
+        JSON string com:
+        - grupos: dict com {dia: [lista de atrações]}
+        - distancias_intra_cluster: dict com distâncias entre membros de cada cluster
+    """
+    try:
+        # Get numero_dias and coordenadas from state
+        numero_dias = runtime.state.get("numero_dias")
+        coordenadas = runtime.state.get("coordenadas_atracoes", {})
+        todas_as_coordenadas_obtidas = runtime.state.get("all_coordenadas_obtidas", False)
+
+        if not todas_as_coordenadas_obtidas:
+            return json.dumps({
+                "error": "Nem todas as coordenadas foram obtidas. Chame extrair_coordenadas primeiro."
+            }, ensure_ascii=False)
+
+        if not numero_dias:
+            return json.dumps({
+                "error": "Número de dias não encontrado no estado do grafo"
+            }, ensure_ascii=False)
+
+        if not coordenadas:
+            return json.dumps({
+                "error": "Coordenadas não encontradas no estado do grafo. Chame extrair_coordenadas primeiro."
+            }, ensure_ascii=False)
+
+        # Preparar dados para K-means
+        nomes = list(coordenadas.keys())
+        coords_array = np.array([[coords["lat"], coords["lon"]] for coords in coordenadas.values()])
+
+        # Aplicar K-means
+        kmeans = KMeans(n_clusters=numero_dias, random_state=42, n_init=10)
+        clusters = kmeans.fit_predict(coords_array)
+
+        # Organizar resultados por dia
+        grupos = {i: [] for i in range(numero_dias)}
+        for idx, cluster_id in enumerate(clusters):
+            grupos[cluster_id].append(nomes[idx])
+
+        # Calcular distâncias intra-cluster
+        distancias_intra_cluster = {}
+        for dia in range(numero_dias):
+            atracoes_dia = grupos[dia]
+            distancias_dia = {}
+
+            for i, atracao1 in enumerate(atracoes_dia):
+                distancias_dia[atracao1] = {}
+                coords1 = (coordenadas[atracao1]["lat"], coordenadas[atracao1]["lon"])
+
+                for j, atracao2 in enumerate(atracoes_dia):
+                    if i != j:
+                        coords2 = (coordenadas[atracao2]["lat"], coordenadas[atracao2]["lon"])
+                        dist = geodesic(coords1, coords2).kilometers
+                        distancias_dia[atracao1][atracao2] = round(dist, 2)
+
+            distancias_intra_cluster[f"dia_{dia + 1}"] = distancias_dia
+
+        # Formatar grupos com dia começando em 1
+        grupos_formatados = {f"dia_{i + 1}": atracoes for i, atracoes in grupos.items()}
+
+        return Command(
+            update={
+                "clusters": clusters,
+                "messages": [ToolMessage(json.dumps({
+                    "grupos": grupos_formatados,
+                    "distancias_intra_cluster": distancias_intra_cluster,
+                }, ensure_ascii=False, indent=2), tool_call_id=runtime.tool_call_id)]
+            }
+        )
+
+    except Exception as e:
+        LOGGER.error(f"Erro ao agrupar atrações: {e}", exc_info=True)
+        return json.dumps({
+            "error": f"Erro ao agrupar atrações: {str(e)}"
+        }, ensure_ascii=False)
 
 
 # ============================================================================
 # Tool Lists for Each Agent
 # ============================================================================
 
-# First agent (day organizer) - only needs distance calculation
+# First agent (day organizer) - needs search, coordinate extraction, and K-means clustering
 DAY_ORGANIZER_TOOLS = [
-    calcular_distancia_entre_locais,
+    pesquisar_informacoes_passeio,
+    extrair_coordenadas,
+    agrupar_atracoes_kmeans,
 ]
 
 # Second agent (passeio researcher) - needs search and images

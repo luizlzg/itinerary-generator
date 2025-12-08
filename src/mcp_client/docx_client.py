@@ -6,6 +6,8 @@ from PIL import Image
 from io import BytesIO
 import os
 from typing import Optional, List, Dict, Any
+from src.utils.utilities import plot_clusters_on_basemap
+import numpy as np
 from src.utils.logger import LOGGER
 
 class LocalDocxGenerator:
@@ -124,6 +126,40 @@ class LocalDocxGenerator:
                     items = block.get("items", [])
                     for item in items:
                         doc.add_paragraph(item, style='List Bullet')
+
+                elif block_type == "page_break":
+                    doc.add_page_break()
+                    LOGGER.debug("Page break added")
+                
+                elif block_type == "final_image":
+                    doc.add_page_break()
+                    doc.add_heading("Mapa do Roteiro", level=1)
+                    clusters = block.get("clusters", [])
+                    coordenadas_atracoes = block.get("coordenadas_atracoes", {})
+                    title = block.get("title", "Mapa de Atrações")
+
+                    if clusters.tolist() and coordenadas_atracoes:
+                        attraction_names = list(coordenadas_atracoes.keys())
+                        locs = [(coordenadas_atracoes[name]['lon'], coordenadas_atracoes[name]['lat']) for name in attraction_names]
+
+                        map_image_path = os.path.join(self.output_dir, "final_map.png")
+                        try:
+                            plot_clusters_on_basemap(
+                                locations=locs,
+                                clusters=clusters,
+                                names=attraction_names,
+                                out_path=map_image_path,
+                                title=title
+                            )
+
+                            LOGGER.info(f"Adding final map image: {map_image_path}")
+                            doc.add_picture(map_image_path, width=Inches(6))
+                            os.remove(map_image_path)
+                        except Exception as e:
+                            LOGGER.error(f"Error generating final map image: {e}", exc_info=True)
+                            doc.add_paragraph("[Mapa não disponível]")
+                    else:
+                        LOGGER.warning("No clusters or coordinates provided for final image.")
 
             # Save document
             LOGGER.info("Saving document...")

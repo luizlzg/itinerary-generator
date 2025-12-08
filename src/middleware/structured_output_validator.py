@@ -16,7 +16,7 @@ from src.utils.logger import LOGGER
 class StructuredOutputValidationError(Exception):
     """Exception raised when structured output validation fails."""
 
-    def __init__(self, message: str, error_feedback_message: str, messages: list):
+    def __init__(self, message: str, error_feedback_message: str, messages: list, state: Dict[str, Any]):
         """
         Initialize the exception.
 
@@ -28,6 +28,7 @@ class StructuredOutputValidationError(Exception):
         super().__init__(message)
         self.error_feedback_message = error_feedback_message
         self.messages = messages
+        self.state = state
 
 
 class StructuredOutputValidatorMiddleware(AgentMiddleware):
@@ -157,7 +158,8 @@ IMPORTANTE: Retorne a estrutura completa e corretamente preenchida.
         raise StructuredOutputValidationError(
             f"Structured output validation failed: {error_message}",
             error_feedback_message,
-            messages
+            messages,
+            state
         )
 
 
@@ -256,3 +258,83 @@ def validate_day_research_result(output: Dict[str, Any]) -> tuple[bool, str]:
             return False, f"Passeio at index {idx} 'nome' cannot be empty"
 
     return True, ""
+
+
+class KMeansUsageValidatorMiddleware(AgentMiddleware):
+    """
+    Middleware that validates that the K-means clustering tool was called before the agent finishes.
+
+    This middleware ensures the day organizer agent follows the correct workflow:
+    1. Extract coordinates using extrair_coordenadas
+    2. Group attractions using agrupar_atracoes_kmeans
+    3. Return structured output
+
+    If the K-means tool was not called, raises an error asking the agent to use it.
+    """
+
+    def __init__(self):
+        """Initialize the middleware."""
+        self.max_retries = int(os.getenv("STRUCTURED_OUTPUT_MAX_RETRIES", "3"))
+        LOGGER.info(
+            f"Initialized KMeansUsageValidatorMiddleware (max_retries={self.max_retries} at agent level)"
+        )
+
+    def after_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Hook that runs after agent completes - validates K-means tool was called.
+
+        Args:
+            state: Current agent state containing messages
+
+        Returns:
+            Updated state if validation passes
+
+        Raises:
+            StructuredOutputValidationError: If K-means tool was not called
+        """
+        LOGGER.info("Running KMeansUsageValidatorMiddleware.after_agent")
+
+        # Get messages from state
+        messages = state.get("messages", [])
+
+        # Check if agrupar_atracoes_kmeans was called by looking for tool calls
+        kmeans_called = False
+        for msg in messages:
+            # Check if this is an AIMessage with tool_calls
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    if tool_call.get("name") == "agrupar_atracoes_kmeans":
+                        kmeans_called = True
+                        LOGGER.info("✅ K-means clustering tool was called")
+                        break
+
+            if kmeans_called:
+                break
+
+        if kmeans_called:
+            return state
+
+        # K-means was not called - raise error
+        LOGGER.warning("⚠️ K-means clustering tool was NOT called")
+
+        error_feedback_message = """
+ATENÇÃO: Você não utilizou a ferramenta 'agrupar_atracoes_kmeans' no seu processo.
+
+Para organizar o roteiro por dias, você DEVE seguir este fluxo:
+
+1. Extrair coordenadas de todas as atrações usando 'extrair_coordenadas'
+2. Agrupar as atrações por dia usando 'agrupar_atracoes_kmeans'
+3. Organizar a ordem das atrações dentro de cada dia por proximidade
+4. Retornar a estrutura final
+
+Você PRECISA chamar 'agrupar_atracoes_kmeans' para agrupar as atrações por dia.
+
+Por favor, complete o fluxo corretamente chamando a ferramenta K-means.
+"""
+
+        raise StructuredOutputValidationError(
+            "K-means clustering tool was not called",
+            error_feedback_message,
+            messages,
+            state
+        )

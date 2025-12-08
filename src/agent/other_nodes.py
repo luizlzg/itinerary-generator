@@ -168,7 +168,7 @@ def build_document_node(state: GraphState) -> Dict[str, Any]:
                     continue
 
                 content_blocks.append(
-                    {"type": "image", "url": url, "id": img.get("id", f"img_{idx}")}
+                    {"type": "image", "url": url, "id": img.get("id", f"img_{idx}"), "caption": img.get("caption", "")}
                 )
 
             # Add ticket/cost info
@@ -217,6 +217,9 @@ def build_document_node(state: GraphState) -> Dict[str, Any]:
             if custo > 0:
                 custo_total += custo
 
+            # Add page break after each attraction
+            content_blocks.append({"type": "page_break"})
+
         # Add spacing between days
         content_blocks.append({"type": "paragraph", "text": ""})
 
@@ -226,10 +229,12 @@ def build_document_node(state: GraphState) -> Dict[str, Any]:
         content_blocks.append(
             {
                 "type": "paragraph",
-                "text": f"Custo total estimado: €{custo_total:.2f}",
+                "text": f"Custo total estimado por pessoa: {custo_total:.2f}",
                 "bold": True,
             }
         )
+    
+    content_blocks.append({"type": "final_image", "title": state.get("document_title", ""), "clusters": state.get("clusters", []), "coordenadas_atracoes": state.get("coordenadas_atracoes", {})})
 
     LOGGER.info(f"Prepared {len(content_blocks)} content blocks for document")
 

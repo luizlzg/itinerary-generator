@@ -18,10 +18,13 @@ from langchain.agents.structured_output import ToolStrategy
 from src.middleware import (
     StructuredOutputValidatorMiddleware,
     StructuredOutputValidationError,
+    KMeansUsageValidatorMiddleware,
     validate_organized_itinerary,
     validate_day_research_result,
 )
 import os
+import anthropic
+import time
 
 
 def _initialize_llm(model_provider: str = "anthropic", model_name: str = "claude-sonnet-4-20250514"):
@@ -39,15 +42,13 @@ def _initialize_llm(model_provider: str = "anthropic", model_name: str = "claude
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
             model=model_name,
-            temperature=0,
-            streaming=True
+            temperature=0
         )
     elif model_provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(
             model=model_name,
             temperature=0,
-            streaming=True,
             max_tokens=32768
         )
     else:
@@ -85,19 +86,22 @@ def create_day_organizer_agent(
     # Format prompt with numero_dias
     formatted_prompt = DAY_ORGANIZER_PROMPT.replace("{numero_dias}", str(numero_dias))
 
-    # Create validation middleware
+    # Create validation middlewares
     validator_middleware = StructuredOutputValidatorMiddleware(
         expected_schema=OrganizedItinerary,
         validator_func=validate_organized_itinerary
     )
 
-    # Create agent with tools, structured output, and middleware
+    kmeans_usage_middleware = KMeansUsageValidatorMiddleware()
+
+    # Create agent with tools, structured output, and middlewares
     agent = create_agent(
         model=llm,
         tools=DAY_ORGANIZER_TOOLS,
         system_prompt=formatted_prompt,
+        state_schema=GraphState,
         response_format=ToolStrategy(OrganizedItinerary),
-        middleware=[validator_middleware]
+        middleware=[kmeans_usage_middleware, validator_middleware]
     )
 
     LOGGER.info("Day organizer agent created successfully with validation middleware")
@@ -141,6 +145,7 @@ def create_passeio_researcher_agent(
         model=llm,
         tools=PASSEIO_RESEARCHER_TOOLS,
         system_prompt=PASSEIO_RESEARCHER_PROMPT,
+        state_schema=GraphState,
         response_format=ToolStrategy(DayResearchResult),
         middleware=[validator_middleware]
     )
@@ -188,6 +193,7 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
 
     # Retry loop
     retry_count = 0
+    state["messages"] = messages
 
     while retry_count <= max_retries:
         try:
@@ -205,7 +211,7 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
             result = None
 
             # Stream events to log all messages
-            for event in agent.stream({"messages": messages}, stream_mode="values"):
+            for event in agent.stream(state, stream_mode="values"):
                 if "messages" in event and event["messages"]:
                     event_messages = event["messages"]
 
@@ -229,7 +235,9 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
 
             return {
                 "document_title": document_title,
-                "passeios_by_day": passeios_by_day
+                "passeios_by_day": passeios_by_day,
+                "clusters": result.get("clusters", []),
+                "coordenadas_atracoes": result.get("coordenadas_atracoes", {}),
             }
 
         except StructuredOutputValidationError as e:
@@ -241,7 +249,9 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
                 LOGGER.info("="*60)
                 return {
                     "document_title": f"Roteiro de Viagem - {numero_dias} Dias",
-                    "passeios_by_day": []
+                    "passeios_by_day": [],
+                    "clusters": [],
+                    "coordenadas_atracoes": {},
                 }
 
             # Add error feedback message for retry
@@ -249,14 +259,39 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
             LOGGER.info(f"Retrying with error feedback...")
 
             # Use all messages from the failed attempt (from middleware) + error feedback
+            state = e.state
             messages = e.messages + [HumanMessage(content=e.error_feedback_message)]
+            state["messages"] = messages
+
+        except anthropic.RateLimitError as e:
+            retry_count += 1
+
+            if retry_count > max_retries:
+                LOGGER.error(f"❌ Day organizer rate limit exceeded after {retry_count} attempts")
+                LOGGER.error(f"Final error: {e}")
+                LOGGER.info("="*60)
+                return {
+                    "document_title": f"Roteiro de Viagem - {numero_dias} Dias",
+                    "passeios_by_day": [],
+                    "clusters": [],
+                    "coordenadas_atracoes": {},
+                }
+
+            wait_time = 10 * retry_count  # Exponential backoff
+            LOGGER.warning(f"⚠️ Rate limit exceeded (attempt {retry_count}/{max_retries + 1}): {e}")
+            LOGGER.info(f"Waiting for {wait_time} seconds before retrying...")
+            time.sleep(wait_time)
+            messages = messages + [HumanMessage(content="Você executou muitas pesquisas em pouco tempo e acabou atingindo o limite de taxa. Essa mensagem indica que você deve começar novamente do zero, realizando menos pesquisas por minuto para evitar atingir o limite novamente. Inicie!")]
+            state["messages"] = messages
 
         except Exception as e:
             LOGGER.error(f"❌ Day organizer failed with unexpected error: {e}", exc_info=True)
             LOGGER.info("="*60)
             return {
                 "document_title": f"Roteiro de Viagem - {numero_dias} Dias",
-                "passeios_by_day": []
+                "passeios_by_day": [],
+                "clusters": [],
+                "coordenadas_atracoes": {},
             }
 
 
@@ -278,9 +313,8 @@ def passeio_researcher_node(state: Dict[str, Any]) -> Dict[str, Any]:
     dia_numero = state.get("dia_numero", 1)
     preferences_input = state.get("preferences_input", "")
 
-    LOGGER.info("="*60)
-    LOGGER.info(f"RESEARCHING DAY {dia_numero} - {len(passeios)} passeios")
-    LOGGER.info("="*60)
+    # Create logging prefix for this worker
+    log_prefix = f"RESEARCH WORKER - DAY {dia_numero} - PASSEIOS: [{', '.join(passeios)}]"
 
     # Get model config from environment
     model_provider = os.getenv("MODEL_PROVIDER", "anthropic")
@@ -307,6 +341,8 @@ Lembre-se de:
 
     messages = [HumanMessage(content=message_content)]
 
+    state["messages"] = messages
+
     # Retry loop
     retry_count = 0
 
@@ -319,13 +355,13 @@ Lembre-se de:
             )
 
             # Invoke agent with streaming to log all messages
-            LOGGER.info(f"Invoking passeio researcher for Dia {dia_numero} (attempt {retry_count + 1}/{max_retries + 1})...")
+            LOGGER.info(f"{log_prefix} | Invoking agent (attempt {retry_count + 1}/{max_retries + 1})")
 
             logged_messages = []
             result = None
 
             # Stream events to log all messages
-            for event in agent.stream({"messages": messages}, stream_mode="values"):
+            for event in agent.stream(state, stream_mode="values"):
                 if "messages" in event and event["messages"]:
                     event_messages = event["messages"]
 
@@ -333,7 +369,7 @@ Lembre-se de:
                     for msg in event_messages:
                         if msg not in logged_messages:
                             logged_messages.append(msg)
-                            LOGGER.info(msg.pretty_repr())
+                            LOGGER.info(f"{log_prefix} | {msg.pretty_repr()}")
 
                     # Keep last result
                     result = event
@@ -341,8 +377,7 @@ Lembre-se de:
             # Extract structured output from final result
             passeios_results = result["structured_response"].get("passeios", [])
 
-            LOGGER.info(f"✅ Completed research for Dia {dia_numero} - {len(passeios_results)} passeios")
-            LOGGER.info("="*60)
+            LOGGER.info(f"{log_prefix} | ✅ Completed - {len(passeios_results)} passeios researched")
 
             # Return as list because processed_passeios uses operator.add reducer
             return {"processed_passeios": passeios_results}
@@ -351,9 +386,8 @@ Lembre-se de:
             retry_count += 1
 
             if retry_count > max_retries:
-                LOGGER.error(f"❌ Passeio researcher validation failed for Dia {dia_numero} after {retry_count} attempts")
-                LOGGER.error(f"Final error: {e}")
-                LOGGER.info("="*60)
+                LOGGER.error(f"{log_prefix} | ❌ Validation failed after {retry_count} attempts")
+                LOGGER.error(f"{log_prefix} | Error: {e}")
                 # Return minimal fallback
                 return {"processed_passeios": [
                     {
@@ -369,15 +403,44 @@ Lembre-se de:
                 ]}
 
             # Add error feedback message for retry
-            LOGGER.warning(f"⚠️ Validation failed for Dia {dia_numero} (attempt {retry_count}/{max_retries + 1}): {e}")
-            LOGGER.info(f"Retrying with error feedback...")
+            LOGGER.warning(f"{log_prefix} | ⚠️ Validation failed (attempt {retry_count}/{max_retries + 1}): {e}")
+            LOGGER.info(f"{log_prefix} | Retrying with error feedback")
 
             # Use all messages from the failed attempt (from middleware) + error feedback
+            state = e.state
             messages = e.messages + [HumanMessage(content=e.error_feedback_message)]
+            state["messages"] = messages
+
+        except anthropic.RateLimitError as e:
+            retry_count += 1
+
+            if retry_count > max_retries:
+                LOGGER.error(f"{log_prefix} | ❌ Rate limit exceeded after {retry_count} attempts")
+                LOGGER.error(f"{log_prefix} | Error: {e}")
+                LOGGER.info("="*60)
+                # Return minimal fallback
+                return {"processed_passeios": [
+                    {
+                        "nome": p,
+                        "dia_numero": dia_numero,
+                        "descricao": "",
+                        "imagens": [],
+                        "informacoes_ingresso": [],
+                        "links_uteis": [],
+                        "custo_estimado": 0.0,
+                    }
+                    for p in passeios
+                ]}
+
+            wait_time = 10 * retry_count  # Exponential backoff
+            LOGGER.warning(f"{log_prefix} | ⚠️ Rate limit exceeded (attempt {retry_count}/{max_retries + 1}): {e}")
+            LOGGER.info(f"Waiting for {wait_time} seconds before retrying...")
+            time.sleep(wait_time)
+            messages = messages + [HumanMessage(content="Você executou muitas pesquisas em pouco tempo e acabou atingindo o limite de taxa. Essa mensagem indica que você deve começar novamente do zero, realizando menos pesquisas por minuto para evitar atingir o limite novamente. Inicie!")]
+            state["messages"] = messages
 
         except Exception as e:
-            LOGGER.error(f"❌ Passeio researcher failed for Dia {dia_numero} with unexpected error: {e}", exc_info=True)
-            LOGGER.info("="*60)
+            LOGGER.error(f"{log_prefix} | ❌ Unexpected error: {e}", exc_info=True)
             # Return minimal fallback
             return {"processed_passeios": [
                 {

@@ -3,7 +3,12 @@
     "allow": [
       "Bash(git commit:*)",
       "Bash(python:*)",
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:blog.langchain.com)",
+      "WebFetch(domain:python.langchain.com)",
+      "WebFetch(domain:stackoverflow.com)",
+      "WebFetch(domain:langchain-ai.github.io)",
+      "Bash(python3 -m py_compile:*)"
     ],
     "deny": [],
     "ask": []
