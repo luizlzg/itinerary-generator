@@ -9,6 +9,9 @@ langgraph-cli[inmem]>=0.4.0  # For local API server and Chat UI
 # MCP (Model Context Protocol)
 mcp>=1.0.0
 
+# Observability
+langsmith>=0.1.0
+
 # API clients
 requests>=2.31.0
 httpx>=0.27.0
@@ -38,3 +41,4 @@ geopandas==1.1.1
 contextily==1.7.0
 shapely==2.1.2
 matplotlib==3.10.7
+adjustText>=0.8  # For non-overlapping map labels

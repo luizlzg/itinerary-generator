@@ -2,58 +2,68 @@
 Helper nodes for the multi-agent itinerary generation graph.
 
 Contains:
-- assign_workers_node: Creates Send() calls to distribute work to passeio researcher agents
+- assign_workers_node: Creates Send() calls to distribute work to attraction researcher agents
 - build_document_node: Final node that generates the DOCX document
 """
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Union, Literal
 from langgraph.types import Send
+from langgraph.graph import END
 from src.agent.state import GraphState
 from src.agent.tools import get_docx_generator
 from src.utils.logger import LOGGER
 
 
-def assign_workers_node(state: GraphState) -> List[Send]:
+def assign_workers_node(state: GraphState) -> Union[List[Send], Literal["__end__"]]:
     """
     Create Send() calls to assign each DAY to the researcher agent.
 
     This node implements the map-reduce pattern by:
-    1. Taking the organized passeios by day from first agent
-    2. Creating a Send() call for EACH DAY to the passeio_researcher_node
+    1. Taking the organized attractions by day from first agent
+    2. Creating a Send() call for EACH DAY to the attraction_researcher_node
     3. Each Send() runs in parallel (one per day)
 
+    If invalid_input is True, returns END to terminate the graph.
+
     Args:
-        state: Graph state containing passeios_by_day from day organizer
+        state: Graph state containing attractions_by_day from day organizer
 
     Returns:
-        List of Send() calls to passeio_researcher_node (one per day)
+        END if input is invalid, otherwise list of Send() calls
     """
-    LOGGER.info("Assigning workers for passeio research...")
+    # Check if input was marked as invalid by the day organizer
+    if state.get("invalid_input", False):
+        LOGGER.warning("Input marked as invalid - routing to END")
+        return END
 
-    passeios_by_day = state.get("passeios_by_day", [])
+    LOGGER.info("Assigning workers for attraction research...")
+
+    attractions_by_day = state.get("attractions_by_day", [])
     preferences_input = state.get("preferences_input", "")
+    language = state.get("language", "en")
 
-    if not passeios_by_day:
-        LOGGER.warning("No passeios found in state to assign")
+    if not attractions_by_day:
+        LOGGER.warning("No attractions found in state to assign")
         return []
 
-    # Create Send() calls for each DAY (not each passeio)
+    # Create Send() calls for each DAY (not each attraction)
     sends = []
 
-    for day_data in passeios_by_day:
-        dia_numero = day_data.get("dia", 1)
-        passeios = day_data.get("passeios", [])
+    for day_data in attractions_by_day:
+        day_number = day_data.get("day", 1)
+        attractions = day_data.get("attractions", [])
 
-        LOGGER.info(f"Creating worker for Dia {dia_numero} with {len(passeios)} passeios")
+        LOGGER.info(f"Creating worker for Day {day_number} with {len(attractions)} attractions")
 
-        # Each Send() will invoke passeio_researcher_node with ALL passeios for this day
+        # Each Send() will invoke attraction_researcher_node with ALL attractions for this day
         sends.append(
             Send(
-                "passeio_researcher_node",
+                "attraction_researcher_node",
                 {
-                    "passeios": passeios,  # List of all passeio names for this day
-                    "dia_numero": dia_numero,
+                    "attractions": attractions,  # List of all attraction names for this day
+                    "day_number": day_number,
                     "preferences_input": preferences_input,
+                    "language": language,
                 },
             )
         )
@@ -64,72 +74,78 @@ def assign_workers_node(state: GraphState) -> List[Send]:
 
 def build_document_node(state: GraphState) -> Dict[str, Any]:
     """
-    Build the final DOCX document from all processed passeios.
+    Build the final DOCX document from all processed attractions.
 
     This node:
-    1. Takes all processed_passeios from state (accumulated from parallel executions)
+    1. Takes all processed_attractions from state (accumulated from parallel executions)
     2. Groups them by day
     3. Generates DOCX document with proper structure
-    4. Calculates total cost
+    4. Calculates costs grouped by currency
     5. Returns final document path
 
+    Note: This node is only called when input is valid (invalid input routes to END).
+
     Args:
-        state: Graph state containing processed_passeios
+        state: Graph state containing processed_attractions
 
     Returns:
-        Updated state with final_document_path and total_cost
+        Updated state with final_document_path and costs_by_currency
     """
     LOGGER.info("Building final document...")
 
-    processed_passeios = state.get("processed_passeios", [])
-    numero_dias = state.get("numero_dias", 3)
-    document_title = state.get("document_title", f"Roteiro de Viagem - {numero_dias} Dias")
+    processed_attractions = state.get("processed_attractions", [])
+    num_days = state.get("num_days", 3)
+    document_title = state.get("document_title", f"Travel Itinerary - {num_days} Days")
+    language = state.get("language", "en")
 
-    if not processed_passeios:
-        LOGGER.error("No processed passeios found in state")
+    if not processed_attractions:
+        LOGGER.error("No processed attractions found in state")
         return {
             "final_document_path": "",
-            "total_cost": 0.0,
+            "costs_by_currency": {},
         }
 
-    LOGGER.info(f"Processing {len(processed_passeios)} passeios for document")
+    LOGGER.info(f"Processing {len(processed_attractions)} attractions for document")
 
-    # Group passeios by day
-    passeios_por_dia = {}
-    for passeio in processed_passeios:
-        if not isinstance(passeio, dict):
-            LOGGER.warning(f"Passeio is not a dict: {type(passeio).__name__}")
+    # Group attractions by day
+    attractions_by_day = {}
+    for attraction in processed_attractions:
+        if not isinstance(attraction, dict):
+            LOGGER.warning(f"Attraction is not a dict: {type(attraction).__name__}")
             continue
 
-        dia_numero = passeio.get("dia_numero", 1)
-        if dia_numero not in passeios_por_dia:
-            passeios_por_dia[dia_numero] = []
-        passeios_por_dia[dia_numero].append(passeio)
+        day_number = attraction.get("day_number", 1)
+        if day_number not in attractions_by_day:
+            attractions_by_day[day_number] = []
+        attractions_by_day[day_number].append(attraction)
 
     # Prepare content blocks for document
     content_blocks = []
-    custo_total = 0.0
+    costs_by_currency = {}  # {currency: total_cost}
+
+    # Language-specific labels
+    labels = _get_language_labels(language)
 
     # Add each day
-    for dia_numero in sorted(passeios_por_dia.keys()):
-        passeios = passeios_por_dia[dia_numero]
+    for day_number in sorted(attractions_by_day.keys()):
+        attractions = attractions_by_day[day_number]
 
         # Add day heading
-        content_blocks.append({"type": "heading", "text": f"Dia {dia_numero}", "level": 1})
+        content_blocks.append({"type": "heading", "text": f"{labels['day']} {day_number}", "level": 1})
 
-        # Add each passeio under this day
-        for passeio in passeios:
-            nome = passeio.get("nome", "Passeio sem nome")
-            descricao = passeio.get("descricao", "")
+        # Add each attraction under this day
+        for attraction in attractions:
+            name = attraction.get("name", labels["unnamed_attraction"])
+            description = attraction.get("description", "")
 
-            LOGGER.info(f"Processing passeio: {nome} (Dia {dia_numero})")
+            LOGGER.info(f"Processing attraction: {name} (Day {day_number})")
 
-            # Add passeio as subheading
-            content_blocks.append({"type": "heading", "text": nome, "level": 2})
+            # Add attraction as subheading
+            content_blocks.append({"type": "heading", "text": name, "level": 2})
 
             # Add description - parse bullet points
-            if descricao:
-                lines = descricao.split('\n')
+            if description:
+                lines = description.split('\n')
                 bullet_points = []
 
                 for line in lines:
@@ -155,11 +171,11 @@ def build_document_node(state: GraphState) -> Dict[str, Any]:
                     content_blocks.append({"type": "bullet_list", "items": bullet_points})
 
             # Add images
-            imagens = passeio.get("imagens", [])
-            if not isinstance(imagens, list):
-                imagens = []
+            images = attraction.get("images", [])
+            if not isinstance(images, list):
+                images = []
 
-            for idx, img in enumerate(imagens):
+            for idx, img in enumerate(images):
                 if not isinstance(img, dict):
                     continue
 
@@ -172,50 +188,53 @@ def build_document_node(state: GraphState) -> Dict[str, Any]:
                 )
 
             # Add ticket/cost info
-            info_ingresso = passeio.get("informacoes_ingresso", [])
-            if not isinstance(info_ingresso, list):
-                info_ingresso = []
+            ticket_info = attraction.get("ticket_info", [])
+            if not isinstance(ticket_info, list):
+                ticket_info = []
 
-            if info_ingresso:
+            if ticket_info:
                 content_blocks.append(
-                    {"type": "heading", "text": "Informações de Ingresso", "level": 3}
+                    {"type": "heading", "text": labels["ticket_info"], "level": 3}
                 )
 
-                for info in info_ingresso:
+                for info in ticket_info:
                     if not isinstance(info, dict):
                         continue
 
-                    conteudo = info.get("conteudo", "")
-                    if conteudo:
-                        content_blocks.append({"type": "paragraph", "text": f"• {conteudo}"})
+                    content = info.get("content", "")
+                    if content:
+                        content_blocks.append({"type": "paragraph", "text": f"• {content}"})
 
                     url = info.get("url")
                     if url:
                         content_blocks.append({"type": "paragraph", "text": f"Link: {url}"})
 
             # Add useful links
-            links = passeio.get("links_uteis", [])
+            links = attraction.get("useful_links", [])
             if not isinstance(links, list):
                 links = []
 
             if links:
-                content_blocks.append({"type": "heading", "text": "Links Úteis", "level": 3})
+                content_blocks.append({"type": "heading", "text": labels["useful_links"], "level": 3})
 
                 link_items = []
                 for link in links:
                     if isinstance(link, dict):
-                        titulo = link.get("titulo", "Link")
+                        title = link.get("title", "Link")
                         url = link.get("url", "")
                         if url:
-                            link_items.append(f"{titulo}: {url}")
+                            link_items.append(f"{title}: {url}")
 
                 if link_items:
                     content_blocks.append({"type": "bullet_list", "items": link_items})
 
-            # Try to extract cost
-            custo = passeio.get("custo_estimado", 0.0)
-            if custo > 0:
-                custo_total += custo
+            # Try to extract cost and currency
+            cost = attraction.get("estimated_cost", 0.0)
+            currency = attraction.get("currency", "EUR")  # Default to EUR if not specified
+            if cost > 0:
+                if currency not in costs_by_currency:
+                    costs_by_currency[currency] = 0.0
+                costs_by_currency[currency] += cost
 
             # Add page break after each attraction
             content_blocks.append({"type": "page_break"})
@@ -223,18 +242,37 @@ def build_document_node(state: GraphState) -> Dict[str, Any]:
         # Add spacing between days
         content_blocks.append({"type": "paragraph", "text": ""})
 
-    # Add cost summary
-    if custo_total > 0:
-        content_blocks.append({"type": "heading", "text": "Resumo de Custos", "level": 1})
+    # Add cost summary grouped by currency
+    if costs_by_currency:
+        content_blocks.append({"type": "heading", "text": labels["cost_summary"], "level": 1})
+
+        # Currency symbols for common currencies
+        currency_symbols = {
+            "EUR": "€",
+            "USD": "$",
+            "GBP": "£",
+            "BRL": "R$",
+            "JPY": "¥",
+            "CHF": "CHF",
+            "AUD": "A$",
+            "CAD": "C$",
+        }
+
+        cost_items = []
+        for currency, total in sorted(costs_by_currency.items()):
+            symbol = currency_symbols.get(currency, currency)
+            cost_items.append(f"{symbol} {total:.2f} ({currency})")
+
+        content_blocks.append({"type": "bullet_list", "items": cost_items})
         content_blocks.append(
             {
                 "type": "paragraph",
-                "text": f"Custo total estimado por pessoa: {custo_total:.2f}",
-                "bold": True,
+                "text": labels["estimated_per_person"],
+                "bold": False,
             }
         )
-    
-    content_blocks.append({"type": "final_image", "title": state.get("document_title", ""), "clusters": state.get("clusters", []), "coordenadas_atracoes": state.get("coordenadas_atracoes", {})})
+
+    content_blocks.append({"type": "final_image", "title": state.get("document_title", ""), "clusters": state.get("clusters", []), "attraction_coordinates": state.get("attraction_coordinates", {})})
 
     LOGGER.info(f"Prepared {len(content_blocks)} content blocks for document")
 
@@ -244,9 +282,9 @@ def build_document_node(state: GraphState) -> Dict[str, Any]:
         LOGGER.info("DOCX generator initialized")
 
         LOGGER.info(f"Using document title: {document_title}")
-        LOGGER.info(f"Calling create_document with {len(content_blocks)} blocks")
+        LOGGER.info(f"Calling create_document with {len(content_blocks)} blocks (language: {language})")
         file_path = generator.create_document(
-            title=document_title, content_blocks=content_blocks
+            title=document_title, content_blocks=content_blocks, language=language
         )
 
         LOGGER.info(f"Document created successfully at: {file_path}")
@@ -255,17 +293,56 @@ def build_document_node(state: GraphState) -> Dict[str, Any]:
             LOGGER.error(f"Document file does not exist: {file_path}")
             return {
                 "final_document_path": "",
-                "total_cost": custo_total,
+                "costs_by_currency": costs_by_currency,
             }
 
         return {
             "final_document_path": file_path,
-            "total_cost": custo_total,
+            "costs_by_currency": costs_by_currency,
         }
 
     except Exception as e:
         LOGGER.error(f"Document generation failed: {e}", exc_info=True)
         return {
             "final_document_path": "",
-            "total_cost": custo_total,
+            "costs_by_currency": costs_by_currency,
         }
+
+
+def _get_language_labels(language: str) -> Dict[str, str]:
+    """Get language-specific labels for document generation."""
+    labels = {
+        "en": {
+            "day": "Day",
+            "unnamed_attraction": "Unnamed attraction",
+            "ticket_info": "Ticket Information",
+            "useful_links": "Useful Links",
+            "cost_summary": "Cost Summary",
+            "estimated_per_person": "* Estimated values per person",
+        },
+        "pt-br": {
+            "day": "Dia",
+            "unnamed_attraction": "Atração sem nome",
+            "ticket_info": "Informações de Ingresso",
+            "useful_links": "Links Úteis",
+            "cost_summary": "Resumo de Custos",
+            "estimated_per_person": "* Valores estimados por pessoa",
+        },
+        "es": {
+            "day": "Día",
+            "unnamed_attraction": "Atracción sin nombre",
+            "ticket_info": "Información de Entrada",
+            "useful_links": "Enlaces Útiles",
+            "cost_summary": "Resumen de Costos",
+            "estimated_per_person": "* Valores estimados por persona",
+        },
+        "fr": {
+            "day": "Jour",
+            "unnamed_attraction": "Attraction sans nom",
+            "ticket_info": "Informations sur les Billets",
+            "useful_links": "Liens Utiles",
+            "cost_summary": "Résumé des Coûts",
+            "estimated_per_person": "* Valeurs estimées par personne",
+        },
+    }
+    return labels.get(language, labels["en"])

@@ -121,7 +121,12 @@ class StructuredOutputValidatorMiddleware(AgentMiddleware):
         Raises:
             StructuredOutputValidationError: If validation fails (includes messages from state)
         """
-        LOGGER.info("Running StructuredOutputValidatorMiddleware.after_model")
+        LOGGER.info("Running StructuredOutputValidatorMiddleware.after_agent")
+
+        # Skip validation if input was marked as invalid
+        if state.get("invalid_input", False):
+            LOGGER.info("⏭️ Skipping structured output validation - input marked as invalid")
+            return state
 
         # Extract structured output from state
         structured_output = state.get("structured_response")
@@ -144,14 +149,14 @@ class StructuredOutputValidatorMiddleware(AgentMiddleware):
 
         # Create error feedback message for the agent
         error_feedback_message = f"""
-ATENÇÃO: A resposta anterior não estava no formato correto.
+ATTENTION: The previous response was not in the correct format.
 
-Erro encontrado: {error_message}
+Error found: {error_message}
 
-Por favor, forneça a resposta NOVAMENTE no formato estruturado correto.
-Certifique-se de incluir TODOS os campos obrigatórios: {list(self.expected_schema.keys())}
+Please provide the response AGAIN in the correct structured format.
+Make sure to include ALL required fields: {list(self.expected_schema.keys())}
 
-IMPORTANTE: Retorne a estrutura completa e corretamente preenchida.
+IMPORTANT: Return the complete and correctly filled structure.
 """
 
         # Raise error with messages - agent definition will handle retry
@@ -171,7 +176,7 @@ def validate_organized_itinerary(output: Dict[str, Any]) -> tuple[bool, str]:
 
     Expected:
     - document_title (str)
-    - passeios_by_day (list of dicts with "dia" and "passeios")
+    - attractions_by_day (list of dicts with "day" and "attractions")
     """
     if not isinstance(output, dict):
         return False, f"Output must be a dict, got {type(output).__name__}"
@@ -183,33 +188,33 @@ def validate_organized_itinerary(output: Dict[str, Any]) -> tuple[bool, str]:
     if not output["document_title"] or not isinstance(output["document_title"], str):
         return False, "'document_title' must be a non-empty string"
 
-    # Check passeios_by_day
-    if "passeios_by_day" not in output:
-        return False, "Missing 'passeios_by_day' field"
+    # Check attractions_by_day
+    if "attractions_by_day" not in output:
+        return False, "Missing 'attractions_by_day' field"
 
-    passeios_by_day = output["passeios_by_day"]
-    if not isinstance(passeios_by_day, list):
-        return False, "'passeios_by_day' must be a list"
+    attractions_by_day = output["attractions_by_day"]
+    if not isinstance(attractions_by_day, list):
+        return False, "'attractions_by_day' must be a list"
 
-    if not passeios_by_day:
-        return False, "'passeios_by_day' cannot be empty"
+    if not attractions_by_day:
+        return False, "'attractions_by_day' cannot be empty"
 
     # Validate each day
-    for idx, day in enumerate(passeios_by_day):
+    for idx, day in enumerate(attractions_by_day):
         if not isinstance(day, dict):
             return False, f"Day at index {idx} must be a dict"
 
-        if "dia" not in day:
-            return False, f"Day at index {idx} missing 'dia' field"
+        if "day" not in day:
+            return False, f"Day at index {idx} missing 'day' field"
 
-        if "passeios" not in day:
-            return False, f"Day at index {idx} missing 'passeios' field"
+        if "attractions" not in day:
+            return False, f"Day at index {idx} missing 'attractions' field"
 
-        if not isinstance(day["passeios"], list):
-            return False, f"Day {day.get('dia')} 'passeios' must be a list"
+        if not isinstance(day["attractions"], list):
+            return False, f"Day {day.get('day')} 'attractions' must be a list"
 
-        if not day["passeios"]:
-            return False, f"Day {day.get('dia')} 'passeios' cannot be empty"
+        if not day["attractions"]:
+            return False, f"Day {day.get('day')} 'attractions' cannot be empty"
 
     return True, ""
 
@@ -219,69 +224,74 @@ def validate_day_research_result(output: Dict[str, Any]) -> tuple[bool, str]:
     Validate DayResearchResult schema.
 
     Expected:
-    - dia_numero (int)
-    - passeios (list of PasseioResearchResult dicts)
+    - day_number (int)
+    - attractions (list of AttractionResearchResult dicts)
     """
     if not isinstance(output, dict):
         return False, f"Output must be a dict, got {type(output).__name__}"
 
-    # Check dia_numero
-    if "dia_numero" not in output:
-        return False, "Missing 'dia_numero' field"
+    # Check day_number
+    if "day_number" not in output:
+        return False, "Missing 'day_number' field"
 
-    if not isinstance(output["dia_numero"], int):
-        return False, "'dia_numero' must be an integer"
+    if not isinstance(output["day_number"], int):
+        return False, "'day_number' must be an integer"
 
-    # Check passeios
-    if "passeios" not in output:
-        return False, "Missing 'passeios' field"
+    # Check attractions
+    if "attractions" not in output:
+        return False, "Missing 'attractions' field"
 
-    passeios = output["passeios"]
-    if not isinstance(passeios, list):
-        return False, "'passeios' must be a list"
+    attractions = output["attractions"]
+    if not isinstance(attractions, list):
+        return False, "'attractions' must be a list"
 
-    if not passeios:
-        return False, "'passeios' cannot be empty - must research all passeios for this day"
+    if not attractions:
+        return False, "'attractions' cannot be empty - must research all attractions for this day"
 
-    # Validate each passeio
-    required_fields = ["nome", "dia_numero", "descricao", "imagens", "custo_estimado"]
-    for idx, passeio in enumerate(passeios):
-        if not isinstance(passeio, dict):
-            return False, f"Passeio at index {idx} must be a dict"
+    # Validate each attraction
+    required_fields = ["name", "day_number", "description", "images", "estimated_cost"]
+    for idx, attraction in enumerate(attractions):
+        if not isinstance(attraction, dict):
+            return False, f"Attraction at index {idx} must be a dict"
 
         for field in required_fields:
-            if field not in passeio:
-                return False, f"Passeio at index {idx} missing '{field}' field"
+            if field not in attraction:
+                return False, f"Attraction at index {idx} missing '{field}' field"
 
-        # Check nome is not empty
-        if not passeio["nome"]:
-            return False, f"Passeio at index {idx} 'nome' cannot be empty"
+        # Check name is not empty
+        if not attraction["name"]:
+            return False, f"Attraction at index {idx} 'name' cannot be empty"
 
     return True, ""
 
 
-class KMeansUsageValidatorMiddleware(AgentMiddleware):
+class ClusteringToolValidatorMiddleware(AgentMiddleware):
     """
-    Middleware that validates that the K-means clustering tool was called before the agent finishes.
+    Middleware that validates that the day organization tool was called before the agent finishes.
 
     This middleware ensures the day organizer agent follows the correct workflow:
-    1. Extract coordinates using extrair_coordenadas
-    2. Group attractions using agrupar_atracoes_kmeans
-    3. Return structured output
+    - Extract coordinates using 'extract_coordinates'
+    - Organize attractions by day using 'organize_attractions_by_days'
 
-    If the K-means tool was not called, raises an error asking the agent to use it.
+    If the input is invalid, the agent should call 'return_invalid_input_error' instead.
+
+    If neither tool was called, raises an error asking the agent to use the correct tool.
     """
 
     def __init__(self):
         """Initialize the middleware."""
         self.max_retries = int(os.getenv("STRUCTURED_OUTPUT_MAX_RETRIES", "3"))
+        self.valid_clustering_tools = ["organize_attractions_by_days"]
+        self.error_handling_tools = ["return_invalid_input_error"]
         LOGGER.info(
-            f"Initialized KMeansUsageValidatorMiddleware (max_retries={self.max_retries} at agent level)"
+            f"Initialized ClusteringToolValidatorMiddleware (max_retries={self.max_retries} at agent level)"
         )
 
     def after_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Hook that runs after agent completes - validates K-means tool was called.
+        Hook that runs after agent completes - validates organization tool was called.
+
+        If input is invalid, the agent should call 'return_invalid_input_error' instead.
 
         Args:
             state: Current agent state containing messages
@@ -290,50 +300,57 @@ class KMeansUsageValidatorMiddleware(AgentMiddleware):
             Updated state if validation passes
 
         Raises:
-            StructuredOutputValidationError: If K-means tool was not called
+            StructuredOutputValidationError: If neither organization nor error tool was called
         """
-        LOGGER.info("Running KMeansUsageValidatorMiddleware.after_agent")
+        LOGGER.info("Running ClusteringToolValidatorMiddleware.after_agent")
 
         # Get messages from state
         messages = state.get("messages", [])
 
-        # Check if agrupar_atracoes_kmeans was called by looking for tool calls
-        kmeans_called = False
+        # Check if the organization tool or error handling tool was called
+        organization_tool_called = False
+        error_tool_called = False
+
         for msg in messages:
             # Check if this is an AIMessage with tool_calls
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tool_call in msg.tool_calls:
-                    if tool_call.get("name") == "agrupar_atracoes_kmeans":
-                        kmeans_called = True
-                        LOGGER.info("✅ K-means clustering tool was called")
-                        break
+                    tool_name = tool_call.get("name")
+                    if tool_name in self.valid_clustering_tools:
+                        organization_tool_called = True
+                        LOGGER.info(f"✅ Organization tool '{tool_name}' was called")
+                    elif tool_name in self.error_handling_tools:
+                        error_tool_called = True
+                        LOGGER.info(f"✅ Error handling tool '{tool_name}' was called")
 
-            if kmeans_called:
+            if organization_tool_called or error_tool_called:
                 break
 
-        if kmeans_called:
+        if organization_tool_called or error_tool_called:
             return state
 
-        # K-means was not called - raise error
-        LOGGER.warning("⚠️ K-means clustering tool was NOT called")
+        # Neither tool was called - raise error
+        LOGGER.warning("⚠️ Neither organization nor error handling tool was called")
 
         error_feedback_message = """
-ATENÇÃO: Você não utilizou a ferramenta 'agrupar_atracoes_kmeans' no seu processo.
+ATTENTION: You didn't use any finalization tool.
 
-Para organizar o roteiro por dias, você DEVE seguir este fluxo:
+You MUST use one of the following tools:
+- 'organize_attractions_by_days': To organize attractions by days (valid input)
+- 'return_invalid_input_error': To return an error message (invalid/unrelated input)
 
-1. Extrair coordenadas de todas as atrações usando 'extrair_coordenadas'
-2. Agrupar as atrações por dia usando 'agrupar_atracoes_kmeans'
-3. Organizar a ordem das atrações dentro de cada dia por proximidade
-4. Retornar a estrutura final
+If the input contains tourist attractions:
+1. Extract coordinates for ALL attractions using 'extract_coordinates'
+2. Use 'organize_attractions_by_days' to organize the attractions
 
-Você PRECISA chamar 'agrupar_atracoes_kmeans' para agrupar as atrações por dia.
+If the input is empty, unrelated, or doesn't contain attractions:
+1. Use 'return_invalid_input_error' with an explanatory message
 
-Por favor, complete o fluxo corretamente chamando a ferramenta K-means.
+Please complete the flow correctly.
 """
 
         raise StructuredOutputValidationError(
-            "K-means clustering tool was not called",
+            "Neither organization nor error handling tool was called",
             error_feedback_message,
             messages,
             state

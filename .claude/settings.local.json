@@ -8,7 +8,15 @@
       "WebFetch(domain:python.langchain.com)",
       "WebFetch(domain:stackoverflow.com)",
       "WebFetch(domain:langchain-ai.github.io)",
-      "Bash(python3 -m py_compile:*)"
+      "Bash(python3 -m py_compile:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:lobehub.com)",
+      "Bash(python3:*)",
+      "WebFetch(domain:docs.tavily.com)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:langfuse.com)",
+      "WebFetch(domain:docs.smith.langchain.com)",
+      "WebFetch(domain:docs.langchain.com)"
     ],
     "deny": [],
     "ask": []

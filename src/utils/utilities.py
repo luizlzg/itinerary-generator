@@ -1,8 +1,10 @@
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from shapely.geometry import Point
 import geopandas as gpd
 import contextily as ctx
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
+
 
 def plot_clusters_on_basemap(
     locations,
@@ -13,37 +15,17 @@ def plot_clusters_on_basemap(
 ):
     """
     Plot clustered points over a static basemap and save an image.
-
-    Parameters
-    ----------
-    locations : list or dict
-        - If list/iterable: list of (lon, lat) pairs in that order.
-        - If dict: mapping name -> {'lat': .., 'lon': ..} or name -> (lon, lat).
-    clusters : list-like
-        cluster labels for each location (same length and order as 'locations' list,
-        or same order as dict.keys() if dict is provided).
-    out_path : str, optional
-        Path to save the output PNG image. Defaults to "clusters_map.png".
-    names : list-like, optional
-        labels for each point. If None and locations is dict, keys are used.
-    title : str, optional
-        Title for the plot. Defaults to "Clusters map".
-    Returns
-    -------
-    fig, ax : matplotlib objects
+    Uses a legend to identify points instead of labels on the map.
     """
-
     crs_mercator = "EPSG:3857"
     crs_input = "EPSG:4326"
-    provider_key="CartoDB.Positron"
-    label_points=True
-    figsize=(14, 10)
-    marker_size=80
-    color_map=None
+    provider_key = "CartoDB.Positron"
+    figsize = (12, 12)  # Square figure to avoid stretching
+    marker_size = 600   # Larger markers for better visibility
+    dpi_save = 150
 
     # Normalize input into ordered lists
     if isinstance(locations, dict):
-        # locations dict: name -> (lon, lat) or {'lat':..,'lon':..}
         items = list(locations.items())
         if names is None:
             names = [k for k, _ in items]
@@ -58,86 +40,106 @@ def plot_clusters_on_basemap(
             else:
                 raise ValueError("Dict values must be (lon, lat) or {'lat':..,'lon':..}")
     else:
-        # locations is list-like of coords
         coords = list(locations)
         if names is None:
             names = [f"P{i}" for i in range(len(coords))]
 
+    # Clean up names for legend (remove city/country suffixes)
+    clean_names = []
+    for n in names:
+        parts = n.split(',')
+        clean_names.append(parts[0].strip())
+
     if len(coords) != len(clusters) or len(coords) != len(names):
         raise ValueError("coords, clusters and names must have the same length")
 
-    # Build GeoDataFrame in input CRS
+    # Build GeoDataFrame
     pts = [Point(lon, lat) for lon, lat in coords]
-    gdf = gpd.GeoDataFrame({'name': names, 'cluster': clusters}, geometry=pts, crs=crs_input)
+    gdf = gpd.GeoDataFrame({
+        'name': names,
+        'clean_name': clean_names,
+        'cluster': clusters
+    }, geometry=pts, crs=crs_input)
 
-    # Convert to web mercator for contextily
     gdf_3857 = gdf.to_crs(crs_mercator)
 
-    # Color map: auto generate if not provided
+    # Color palette for days
+    base_colors = ['#E63946', '#457B9D', '#2A9D8F', '#E9C46A', '#9B5DE5', '#F4A261', '#00B4D8', '#06D6A0']
     unique_clusters = sorted(set(clusters))
-    if color_map is None:
-        # simple palette: cycle through a few colors
-        base_colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'cyan', 'magenta']
-        color_map = {c: base_colors[i % len(base_colors)] for i, c in enumerate(unique_clusters)}
+    color_map = {c: base_colors[i % len(base_colors)] for i, c in enumerate(unique_clusters)}
     gdf_3857['color'] = gdf_3857['cluster'].map(color_map).fillna('black')
 
-    # Plot
+    # Create figure
     fig, ax = plt.subplots(figsize=figsize)
-    gdf_3857.plot(ax=ax, marker='o', markersize=marker_size, alpha=0.85,
-                  color=gdf_3857['color'], edgecolor='k', linewidth=0.35, zorder=3)
 
-    if label_points:
-        for x, y, label in zip(gdf_3857.geometry.x, gdf_3857.geometry.y, gdf_3857['name']):
-            ax.text(x + 20, y + 20, label, fontsize=9, ha='left', va='bottom', zorder=5)
-
-    # Compute extent buffer so tiles include context
+    # Compute extent
     minx, miny, maxx, maxy = gdf_3857.total_bounds
     dx = maxx - minx
     dy = maxy - miny
-    if dx == 0 and dy == 0:
-        buf = 1000
-    else:
-        buf = max(dx, dy) * 0.25
+    buf = max(dx, dy) * 0.15 if dx > 0 or dy > 0 else 1000
+
+    # Draw markers with numbers
+    x_coords = list(gdf_3857.geometry.x)
+    y_coords = list(gdf_3857.geometry.y)
+
+    for idx, (x, y, cluster) in enumerate(zip(x_coords, y_coords, gdf_3857['cluster'])):
+        color = color_map.get(cluster, 'gray')
+        # Draw marker
+        ax.scatter(x, y, c=color, s=marker_size, edgecolors='white', linewidths=3, zorder=5)
+        # Draw number on marker
+        ax.text(x, y, str(idx + 1), fontsize=16, fontweight='bold',
+                ha='center', va='center', color='white', zorder=6)
+
+    # Set limits
     ax.set_xlim(minx - buf, maxx + buf)
     ax.set_ylim(miny - buf, maxy + buf)
 
-    # Add basemap using the provider that worked for you (CartoDB.Positron by default)
+    # Add basemap
     try:
-        # Obtain provider object safely (works with different contextily/xyzservices versions)
         provider = None
         try:
             provider = ctx.providers[provider_key]
         except Exception:
-            # try attribute-like names (older versions)
             top, _, sub = provider_key.partition('.')
             if hasattr(ctx.providers, top):
                 top_bunch = getattr(ctx.providers, top)
                 if sub and hasattr(top_bunch, sub):
                     provider = getattr(top_bunch, sub)
         if provider is None:
-            # fallback: try direct string key in providers dict keys
             provider = ctx.providers.get(provider_key, None)
-
-        if provider is None:
-            raise RuntimeError(f"Provider '{provider_key}' not found in ctx.providers; try another key or run `list(ctx.providers.keys())` to inspect available providers.")
-
-        ctx.add_basemap(ax, source=provider, crs=crs_mercator)
+        if provider:
+            ctx.add_basemap(ax, source=provider, crs=crs_mercator)
     except Exception as e:
-        print("⚠️ Could not add basemap tiles. Error:", e)
-        print("Plot will show points but without tiles.")
+        print(f"⚠️ Could not add basemap: {e}")
 
     ax.set_axis_off()
-    if title is None:
-        ax.set_title("Clustered locations — basemap", fontsize=14)
-    else:
-        ax.set_title(title, fontsize=14)
-    plt.tight_layout()
+    if title:
+        ax.set_title(title, fontsize=20, fontweight='bold', pad=20)
+
+    # Create legend with attraction names grouped by day
+    legend_elements = []
+    for cluster_id in unique_clusters:
+        color = color_map[cluster_id]
+        # Add day header
+        legend_elements.append(Line2D([0], [0], marker='o', color='w',
+                                       markerfacecolor=color, markersize=14,
+                                       label=f'Day {cluster_id + 1}'))
+        # Add attractions for this day
+        for idx, (name, c) in enumerate(zip(clean_names, clusters)):
+            if c == cluster_id:
+                legend_elements.append(Line2D([0], [0], marker='', color='w',
+                                               label=f'  {idx + 1}. {name}'))
+
+    ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1),
+              fontsize=11, framealpha=0.95, borderaxespad=0)
 
     try:
-        fig.savefig(out_path, dpi=300, bbox_inches='tight')
+        fig.savefig(out_path, dpi=dpi_save, bbox_inches='tight', pad_inches=0.1)
         print(f"Saved map image to ./{out_path}")
     except Exception as e:
-        print("⚠️ Could not save PNG:", e)
+        print(f"⚠️ Could not save PNG: {e}")
+    finally:
+        plt.close(fig)
 
 
 def merge_dicts(left: Dict, right: Dict) -> Dict:
