@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from src.agent.graph import build_graph
-from src.mcp_client.email_mcp_client import check_email_config, send_itinerary_email_sync
+from src.processor.email_processor import check_email_config, send_itinerary_email_sync
 from src.utils.observability import setup_langsmith_tracing
 
 # Load environment variables

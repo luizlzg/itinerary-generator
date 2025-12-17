@@ -16,7 +16,9 @@
       "WebFetch(domain:pypi.org)",
       "WebFetch(domain:langfuse.com)",
       "WebFetch(domain:docs.smith.langchain.com)",
-      "WebFetch(domain:docs.langchain.com)"
+      "WebFetch(domain:docs.langchain.com)",
+      "Bash(rustc:*)",
+      "Bash(pip3 install:*)"
     ],
     "deny": [],
     "ask": []

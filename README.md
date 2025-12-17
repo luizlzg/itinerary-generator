@@ -1,182 +1,224 @@
-# European Transport AI Agent
+# Itinerary Generator
 
-A production-ready LangGraph-based ReAct agent that finds the cheapest and fastest routes between European cities using real-time data from planes, trains, and buses.
+A multi-agent LangGraph system that transforms a list of tourist attractions into comprehensive day-by-day travel itineraries with geographic optimization, detailed research, and professional DOCX document generation.
 
-![Status](https://img.shields.io/badge/status-MVP-green)
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
 ![LangChain](https://img.shields.io/badge/langchain-1.0-purple)
+![LangGraph](https://img.shields.io/badge/langgraph-0.2+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
-
-## Quick Links
-
-- **[Chat UI Setup](CHAT_UI_SETUP.md)** - Web-based chat interface (NEW!)
-- **[Quick Start (5 min)](QUICKSTART.md)** - Get running in 5 minutes
-- **[Setup Guide](SETUP_GUIDE.md)** - Detailed installation and configuration
-- **[API Documentation](API_DOCUMENTATION.md)** - API keys, pricing, and usage
-- **[Project Overview](PROJECT_OVERVIEW.md)** - Architecture and design decisions
-- **[LangChain 1.0 Notes](LANGCHAIN_1.0_NOTES.md)** - v1.0 compliance and migration details
 
 ## Features
 
-- **Multi-modal Transport Search**: Compares prices and times across flights, trains, and buses
-- **Real API Integration** (no mock data):
-  - ✈️ Flights: Amadeus API (270+ airlines worldwide)
-  - 🚂 Trains: SNCF API (French railways + international)
-  - 🚌 Buses: FlixBus API (2,500+ destinations)
-- **Web Chat UI**: Modern browser-based interface powered by LangChain Agent Chat UI
-- **CLI Interface**: Rich terminal interface with markdown support
-- **Filesystem Integration**: Save and load itineraries via MCP
-- **ReAct Architecture**: Intelligent reasoning and acting loop
+- **Intelligent Day Organization**: K-means clustering groups attractions by geographic proximity
+- **Address-Based Geocoding**: Searches for official addresses before geocoding to ensure accuracy
+- **User Preference Handling**: Supports isolated days, specific day assignments, or flexible grouping
+- **Parallel Research**: Multiple agent instances research attractions concurrently
+- **Rich Attraction Details**: Descriptions, opening hours, costs, ticket links, and images
+- **Professional DOCX Output**: Styled documents with visual route maps
+- **Multi-Language Support**: English, Portuguese (BR), Spanish, French
+- **Email Delivery**: Send generated itineraries via SMTP
+
+## Architecture
+
+The system uses LangGraph to orchestrate specialized agents in a pipeline:
+
+```
+User Input (attractions list)
+         │
+         ▼
+┌─────────────────────────────┐
+│  Day Organizer Agent        │
+│  1. Search official address │  ← Uses web search for accurate geocoding
+│  2. Extract coordinates     │
+│  3. K-means clustering      │
+│  4. Respect user prefs      │
+└─────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  Attraction Researcher      │  Parallel instances (one per day)
+│  Agents                     │  research details, images, costs
+└─────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  Document Builder           │  Generates DOCX with maps, images,
+│                             │  and cost summaries
+└─────────────────────────────┘
+         │
+         ▼
+    DOCX Output + Optional Email
+```
 
 ## Tech Stack
 
-- **LangChain 1.0** - Latest stable release (langchain>=1.0.0, langchain-core>=1.0.0)
-  - TypedDict state schemas (v1.0 compliant)
-  - Modern message handling
-  - Improved tool integration
-- **LangGraph** - State-based agent orchestration
-- **MCP (Model Context Protocol)** - Standardized tool integration
-- **Real APIs** - Amadeus, SNCF, FlixBus with live data
-- **Python 3.10+** - Required by LangChain 1.0
+- **LangChain 1.0** / **LangGraph** - Agent orchestration with TypedDict state schemas
+- **Claude Sonnet 4** (Anthropic) or **GPT-4** (OpenAI) - LLM providers
+- **Tavily MCP** - Web search and image retrieval
+- **GeoPy** - Geocoding via Nominatim
+- **scikit-learn** - K-means clustering for geographic grouping
+- **GeoPandas / Matplotlib** - Route map visualization
+- **python-docx** - Document generation
 
-## Quick Start (2 minutes)
+## Quick Start
 
 ```bash
-# 1. Install dependencies
+# 1. Clone and install dependencies
+git clone <repository-url>
+cd itinerary-generator
 pip install -r requirements.txt
 
-# 2. Create .env file with your OpenAI key
-echo "OPENAI_API_KEY=sk-your-key-here" > .env
+# 2. Configure environment
+cp .env.example .env
+# Edit .env with your API keys (see Configuration below)
 
-# 3. Run the agent
+# 3. Run the CLI
 python main.py
 ```
 
-That's it! See [QUICKSTART.md](QUICKSTART.md) for detailed setup with all APIs.
+## Configuration
 
-## Example Conversation
-
-```
-You: I need to go from Paris to Berlin on November 15th
-
-Agent: Let me search for all transportation options for you...
-
-       Here are your options from Paris to Berlin on November 15th:
-
-       1. ✈️  Flight (Ryanair): €129.00 - 2 hours (fastest)
-       2. 🚂 Train (SNCF): €89.00 - 8 hours 15 minutes
-       3. 🚌 Bus (FlixBus): €45.90 - 13 hours 30 minutes (cheapest)
-
-       The bus is the most economical option, while the flight
-       is fastest. Would you like me to save any of these?
-
-You: Save the cheapest option
-
-Agent: ✓ Saved to saved_itineraries/paris_berlin_2025-11-15.json
-```
-
-## Documentation
-
-- **[QUICKSTART.md](QUICKSTART.md)** - Get up and running in 5 minutes
-- **[SETUP_GUIDE.md](SETUP_GUIDE.md)** - Complete setup instructions with all API keys
-- **[API_DOCUMENTATION.md](API_DOCUMENTATION.md)** - Detailed API information, pricing, and troubleshooting
-- **[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)** - Architecture, design decisions, and technical details
-
-## Testing
-
-Run the test suite to verify your setup:
+Create a `.env` file with the following:
 
 ```bash
-python test_agent.py
+# LLM Provider (required - choose one)
+ANTHROPIC_API_KEY=sk-ant-...
+# or
+OPENAI_API_KEY=sk-...
+
+# Model settings
+MODEL_PROVIDER=anthropic          # or "openai"
+MODEL_NAME=claude-sonnet-4-5-20250929  # or "gpt-4o"
+
+# Web Search (required for attraction research)
+TAVILY_API_KEY=tvly-...
+
+# Email delivery (optional)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+
+# Observability (optional)
+LANGSMITH_TRACING=false
+LANGSMITH_API_KEY=lsv2_pt_...
+LANGSMITH_PROJECT=itinerary-generator
 ```
 
-This checks:
-- ✓ All dependencies installed
-- ✓ API keys configured correctly
-- ✓ API clients working
-- ✓ Agent initializes properly
+## Usage
+
+The CLI guides you through the itinerary creation process:
+
+1. **Enter attractions** (one per line, end with "END"):
+   ```
+   Eiffel Tower, Paris
+   Louvre Museum, Paris
+   Notre-Dame Cathedral, Paris
+   Versailles Palace
+   END
+   ```
+
+2. **Add preferences** (optional):
+   ```
+   Versailles needs a full day alone
+   Start from the hotel near Eiffel Tower
+   ```
+
+3. **Select options**:
+   - Number of days
+   - Output language (en, pt-br, es, fr)
+
+4. **Receive output**:
+   - Generated DOCX saved to `.results/`
+   - Cost summary by currency displayed
+   - Option to send via email
+
+## User Preference Types
+
+The Day Organizer understands three types of user intent:
+
+| Type | Example | Behavior |
+|------|---------|----------|
+| **Isolated** | "Disneyland needs a full day" | Attraction gets exclusive day |
+| **Specific Day** | "Eiffel Tower on day 1" | Assigned to day, can share with others |
+| **Flexible** | Just listing attractions | Grouped by geographic proximity |
 
 ## Project Structure
 
 ```
-mcp-agent-transport/
-├── main.py                 # Entry point - interactive chat interface
-├── test_agent.py          # Test suite for verification
-├── requirements.txt       # Python dependencies
-├── .env.example          # Environment template
+itinerary-generator/
+├── main.py                              # CLI entry point
+├── requirements.txt                     # Dependencies
+├── .env.example                         # Configuration template
 │
-├── agent/                # LangGraph ReAct agent
-│   ├── graph.py         # Agent state machine and orchestration
-│   ├── tools.py         # All agent tools (search, save, etc.)
-│   └── prompts.py       # System prompts and formatting
+├── src/
+│   ├── agent/
+│   │   ├── graph.py                    # LangGraph workflow definition
+│   │   ├── state.py                    # TypedDict state schemas
+│   │   ├── agent_definition.py         # Agent creation and node functions
+│   │   ├── tools.py                    # Search, geocoding, clustering tools
+│   │   ├── prompts.py                  # System prompts for agents
+│   │   └── other_nodes.py              # Helper nodes (assign_workers, build_document)
+│   │
+│   ├── processor/
+│   │   ├── docx_processor.py           # DOCX document generation
+│   │   └── email_processor.py          # SMTP email client
+│   │
+│   ├── mcp_client/
+│   │   └── tavily_client.py            # Tavily MCP for web/image search
+│   │
+│   ├── middleware/
+│   │   └── structured_output_validator.py  # Output validation with retry
+│   │
+│   └── utils/
+│       ├── logger.py                   # Rich CLI logging
+│       ├── observability.py            # LangSmith integration
+│       └── utilities.py                # Geospatial plotting helpers
 │
-├── apis/                 # Real API integrations
-│   ├── amadeus.py       # Amadeus flight search
-│   ├── trains.py        # SNCF train search
-│   └── buses.py         # FlixBus search via RapidAPI
-│
-├── mcp/                  # Model Context Protocol
-│   └── client.py        # MCP filesystem client
-│
-├── saved_itineraries/   # User-saved searches
-│
-└── docs/                # Complete documentation
-    ├── README.md
-    ├── QUICKSTART.md
-    ├── SETUP_GUIDE.md
-    ├── API_DOCUMENTATION.md
-    └── PROJECT_OVERVIEW.md
+└── .results/                            # Generated DOCX files
 ```
 
-## What Makes This Special
+## Output Example
 
-1. **Real MVP**: No mock data - all APIs are production-ready
-2. **LangChain 1.0**: Uses the latest LangChain features
-3. **Proper ReAct**: True reasoning and acting loop with LangGraph
-4. **MCP Integration**: Standardized tool protocol for filesystem
-5. **Comprehensive Docs**: Everything you need to deploy
-6. **Beautiful UX**: Rich CLI with markdown rendering
-7. **Extensible**: Easy to add new APIs or features
+The generated DOCX includes:
 
-## Cost Estimation
+- **Cover page** with itinerary title and dates
+- **Day-by-day sections** with:
+  - Attraction descriptions and tips
+  - Opening hours and addresses
+  - Embedded images with captions
+  - Ticket purchase links
+  - Estimated costs per person
+- **Visual route map** with color-coded day markers
+- **Cost summary** grouped by currency
 
-**Testing/Development** (10-20 queries/day):
-- OpenAI GPT-4: ~$0.50-1.00/day
-- APIs: Free (within tier limits)
-- **Total: < $1/day**
+## API Requirements
 
-**Production** (100 queries/day):
-- OpenAI GPT-4: ~$5-10/day
-- APIs: Free + minimal overage
-- **Total: ~$200-300/month**
+| Service | Purpose | Free Tier |
+|---------|---------|-----------|
+| Anthropic/OpenAI | LLM reasoning | Pay per token |
+| Tavily | Web search + images | 1,000 searches/month |
 
-## Requirements
+## Geocoding Accuracy
 
-- Python 3.10 or higher
-- OpenAI or Anthropic API key
-- (Optional) Transportation API keys for real data
-- (Optional) Node.js for MCP servers
+The agent searches for official addresses before geocoding to ensure accurate coordinates:
 
-## Contributing
+1. **Search**: Queries "[attraction] [city] [country] official address"
+2. **Extract**: Gets street/area from search results
+3. **Geocode**: Uses full address like "Colosseum, Piazza del Colosseo, Rome, Italy"
 
-This is a complete, working MVP. Areas for enhancement:
+This prevents errors with attractions that have namesakes in other cities.
 
-1. Add more transportation APIs (Trainline, Deutsche Bahn, etc.)
-2. Support multi-city routes
-3. Add booking capabilities
-4. Build a web interface
-5. Implement price tracking and alerts
+## Troubleshooting
+
+**jsonschema-rs build error**: This occurs on Python 3.14+ without Rust installed. Either:
+- Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- Use Python 3.12 or 3.13 where pre-built wheels are available
+
+**Geocoding failures**: The agent will search for official addresses before geocoding. If issues persist, ensure attraction names include city and country.
+
+**Rate limits**: The system includes exponential backoff retry. For high volume, consider adding delays between requests.
 
 ## License
 
 MIT License - Free to use and modify
-
-## Support
-
-- Run `python test_agent.py` to diagnose issues
-- Check [SETUP_GUIDE.md](SETUP_GUIDE.md) for troubleshooting
-- Review [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for API help
-
----
-
-Built with LangChain 1.0 and LangGraph. This is a production-ready MVP with real API integrations.

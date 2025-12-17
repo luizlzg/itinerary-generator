@@ -5,7 +5,7 @@ from langchain.messages import ToolMessage
 from typing_extensions import Annotated
 from langgraph.types import Command
 from src.mcp_client.tavily_client import TavilyMCPClient
-from src.mcp_client.docx_client import LocalDocxGenerator
+from src.processor.docx_processor import LocalDocxGenerator
 from src.utils.logger import LOGGER
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
