@@ -230,13 +230,6 @@ def validate_day_research_result(output: Dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(output, dict):
         return False, f"Output must be a dict, got {type(output).__name__}"
 
-    # Check day_number
-    if "day_number" not in output:
-        return False, "Missing 'day_number' field"
-
-    if not isinstance(output["day_number"], int):
-        return False, "'day_number' must be an integer"
-
     # Check attractions
     if "attractions" not in output:
         return False, "Missing 'attractions' field"
@@ -267,21 +260,22 @@ def validate_day_research_result(output: Dict[str, Any]) -> tuple[bool, str]:
 
 class ClusteringToolValidatorMiddleware(AgentMiddleware):
     """
-    Middleware that validates that the day organization tool was called before the agent finishes.
+    Middleware that validates the day organizer agent follows the correct workflow:
 
-    This middleware ensures the day organizer agent follows the correct workflow:
-    - Extract coordinates using 'extract_coordinates'
-    - Organize attractions by day using 'organize_attractions_by_days'
+    1. Extract coordinates using 'extract_coordinates'
+    2. Organize attractions by day using 'organize_attractions_by_days'
+    3. If flexible attractions exist (K-means used), request user approval via 'request_itinerary_approval'
 
     If the input is invalid, the agent should call 'return_invalid_input_error' instead.
 
-    If neither tool was called, raises an error asking the agent to use the correct tool.
+    Raises an error if the workflow is not followed correctly.
     """
 
     def __init__(self):
         """Initialize the middleware."""
         self.max_retries = int(os.getenv("STRUCTURED_OUTPUT_MAX_RETRIES", "3"))
         self.valid_clustering_tools = ["organize_attractions_by_days"]
+        self.approval_tools = ["request_itinerary_approval"]
         self.error_handling_tools = ["return_invalid_input_error"]
         LOGGER.info(
             f"Initialized ClusteringToolValidatorMiddleware (max_retries={self.max_retries} at agent level)"
@@ -289,9 +283,11 @@ class ClusteringToolValidatorMiddleware(AgentMiddleware):
 
     def after_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Hook that runs after agent completes - validates organization tool was called.
+        Hook that runs after agent completes - validates workflow was followed.
 
-        If input is invalid, the agent should call 'return_invalid_input_error' instead.
+        Checks:
+        1. Organization tool or error tool was called
+        2. If has_flexible_attractions=True, approval tool must be called
 
         Args:
             state: Current agent state containing messages
@@ -300,15 +296,16 @@ class ClusteringToolValidatorMiddleware(AgentMiddleware):
             Updated state if validation passes
 
         Raises:
-            StructuredOutputValidationError: If neither organization nor error tool was called
+            StructuredOutputValidationError: If workflow is not followed correctly
         """
         LOGGER.info("Running ClusteringToolValidatorMiddleware.after_agent")
 
         # Get messages from state
         messages = state.get("messages", [])
 
-        # Check if the organization tool or error handling tool was called
+        # Check which tools were called
         organization_tool_called = False
+        approval_tool_called = False
         error_tool_called = False
 
         for msg in messages:
@@ -319,21 +316,24 @@ class ClusteringToolValidatorMiddleware(AgentMiddleware):
                     if tool_name in self.valid_clustering_tools:
                         organization_tool_called = True
                         LOGGER.info(f"✅ Organization tool '{tool_name}' was called")
+                    elif tool_name in self.approval_tools:
+                        approval_tool_called = True
+                        LOGGER.info(f"✅ Approval tool '{tool_name}' was called")
                     elif tool_name in self.error_handling_tools:
                         error_tool_called = True
                         LOGGER.info(f"✅ Error handling tool '{tool_name}' was called")
 
-            if organization_tool_called or error_tool_called:
-                break
-
-        if organization_tool_called or error_tool_called:
+        # If error tool was called, skip other validations
+        if error_tool_called:
+            LOGGER.info("Error handling tool was called - skipping other validations")
             return state
 
-        # Neither tool was called - raise error
-        LOGGER.warning("⚠️ Neither organization nor error handling tool was called")
+        # Check if organization tool was called
+        if not organization_tool_called:
+            LOGGER.warning("⚠️ Organization tool was not called")
 
-        error_feedback_message = """
-ATTENTION: You didn't use any finalization tool.
+            error_feedback_message = """
+ATTENTION: You didn't use the organization tool.
 
 You MUST use one of the following tools:
 - 'organize_attractions_by_days': To organize attractions by days (valid input)
@@ -349,9 +349,36 @@ If the input is empty, unrelated, or doesn't contain attractions:
 Please complete the flow correctly.
 """
 
-        raise StructuredOutputValidationError(
-            "Neither organization nor error handling tool was called",
-            error_feedback_message,
-            messages,
-            state
-        )
+            raise StructuredOutputValidationError(
+                "Organization tool was not called",
+                error_feedback_message,
+                messages,
+                state
+            )
+
+        # Check if approval is required (has_flexible_attractions=True)
+        has_flexible_attractions = state.get("has_flexible_attractions", False)
+
+        if has_flexible_attractions and not approval_tool_called:
+            LOGGER.warning("⚠️ Flexible attractions exist but approval tool was not called")
+
+            error_feedback_message = """
+ATTENTION: You organized attractions with K-means (flexible attractions) but didn't request user approval.
+
+When has_flexible_attractions=True (mode="kmeans" or mode="mixed"), you MUST:
+1. Call 'request_itinerary_approval' to get user confirmation
+2. If user requests changes, use 'update_itinerary_organization' to apply them
+3. Call 'request_itinerary_approval' again until approved
+
+Please call 'request_itinerary_approval' now to get user approval for the itinerary.
+"""
+
+            raise StructuredOutputValidationError(
+                "Approval tool not called for flexible attractions",
+                error_feedback_message,
+                messages,
+                state
+            )
+
+        LOGGER.info("✅ Workflow validation passed")
+        return state

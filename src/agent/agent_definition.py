@@ -6,10 +6,14 @@ Built with LangChain 1.0:
 - Two specialized agents: day organizer and attraction researcher
 - Multi-language support
 - Middleware-based structured output validation with retry logic
+- Interrupt support for user approval of K-means organized itineraries
 """
 from typing import Dict, Any
+import uuid
 from langchain_core.messages import HumanMessage
 from langchain.agents import create_agent
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 from src.agent.tools import DAY_ORGANIZER_TOOLS, ATTRACTION_RESEARCHER_TOOLS
 from src.agent.prompts import DAY_ORGANIZER_PROMPT, ATTRACTION_RESEARCHER_PROMPT
 from src.agent.state import GraphState, OrganizedItinerary, DayResearchResult
@@ -58,7 +62,8 @@ def _initialize_llm(model_provider: str = "anthropic", model_name: str = "claude
 def create_day_organizer_agent(
     model_provider: str = "anthropic",
     model_name: str = "claude-sonnet-4-20250514",
-    num_days: int = 3
+    num_days: int = 3,
+    checkpointer=None
 ):
     """
     Create the day organizer agent (first agent).
@@ -69,11 +74,13 @@ def create_day_organizer_agent(
     - Uses only the distance calculation tool
     - Returns structured output (OrganizedItinerary)
     - Uses middleware for structured output validation
+    - Supports interrupt for user approval of K-means organized itineraries
 
     Args:
         model_provider: LLM provider ('openai' or 'anthropic')
         model_name: Model name to use
         num_days: Number of days for the itinerary (used in prompt)
+        checkpointer: Checkpointer for state persistence (required for interrupt support)
 
     Returns:
         Agent configured with structured output and validation middleware
@@ -94,17 +101,18 @@ def create_day_organizer_agent(
 
     clustering_validator_middleware = ClusteringToolValidatorMiddleware()
 
-    # Create agent with tools, structured output, and middlewares
+    # Create agent with tools, structured output, middlewares, and checkpointer
     agent = create_agent(
         model=llm,
         tools=DAY_ORGANIZER_TOOLS,
         system_prompt=formatted_prompt,
         state_schema=GraphState,
         response_format=ToolStrategy(OrganizedItinerary),
-        middleware=[clustering_validator_middleware, validator_middleware]
+        middleware=[clustering_validator_middleware, validator_middleware],
+        checkpointer=checkpointer
     )
 
-    LOGGER.info("Day organizer agent created successfully with validation middleware")
+    LOGGER.info("Day organizer agent created successfully with validation middleware and interrupt support")
     return agent
 
 
@@ -163,6 +171,32 @@ def create_attraction_researcher_agent(
 # Node Functions
 # ============================================================================
 
+def _display_itinerary_for_approval(itinerary: list) -> None:
+    """Display the proposed itinerary for user approval."""
+    print("\n" + "="*60)
+    print("PROPOSED ITINERARY ORGANIZATION")
+    print("="*60)
+
+    for day_info in itinerary:
+        day_num = day_info.get("day", "?")
+        attractions = day_info.get("attractions", [])
+        print(f"\nDay {day_num}:")
+        for attraction in attractions:
+            print(f"  • {attraction}")
+
+    print("\n" + "="*60)
+
+
+def _get_user_approval() -> str:
+    """Get user approval or feedback for the proposed itinerary."""
+    print("\nIs this organization okay?")
+    print("Type 'yes' to approve, or describe what changes you'd like.")
+    print("Examples: 'move Louvre to day 2', 'swap day 1 and day 3'\n")
+
+    response = input("Your response: ").strip()
+    return response
+
+
 def day_organizer_node(state: GraphState) -> Dict[str, Any]:
     """
     Node that runs the day organizer agent (first agent).
@@ -172,6 +206,7 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
     - Organizes attractions by days (using preferences or distance)
     - Returns OrganizedItinerary structure
     - Implements retry logic for validation failures
+    - Handles interrupt for user approval of K-means organized itineraries
 
     Args:
         state: Graph state with user_input and num_days
@@ -196,17 +231,23 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
     full_input = f"{user_input}\n\nPreferences: {preferences_input}" if preferences_input else user_input
     messages = [HumanMessage(content=full_input)]
 
+    # Create checkpointer and thread_id for interrupt support
+    checkpointer = MemorySaver()
+    thread_id = str(uuid.uuid4())
+    agent_config = {"configurable": {"thread_id": thread_id}}
+
     # Retry loop
     retry_count = 0
     state["messages"] = messages
 
     while retry_count <= max_retries:
         try:
-            # Create agent for this attempt
+            # Create agent for this attempt (with checkpointer for interrupt support)
             agent = create_day_organizer_agent(
                 model_provider=model_provider,
                 model_name=model_name,
                 num_days=num_days,
+                checkpointer=checkpointer,
             )
 
             # Invoke agent with streaming to log all messages
@@ -216,7 +257,7 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
             result = None
 
             # Stream events to log all messages
-            for event in agent.stream(state, stream_mode="values"):
+            for event in agent.stream(state, config=agent_config, stream_mode="values"):
                 if "messages" in event and event["messages"]:
                     event_messages = event["messages"]
 
@@ -228,6 +269,42 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
 
                     # Keep last result
                     result = event
+
+            # Check for interrupt after streaming completes
+            while True:
+                if "__interrupt__" in result:
+                    has_interrupt = True
+                    interrupt_info = result["__interrupt__"][0].value
+                else:
+                    has_interrupt = False
+                    interrupt_info = None
+
+                if not has_interrupt:
+                    break
+
+                # Handle itinerary approval interrupt
+                if isinstance(interrupt_info, dict) and interrupt_info.get("type") == "itinerary_approval":
+                    itinerary = interrupt_info.get("itinerary", [])
+                    _display_itinerary_for_approval(itinerary)
+                    user_response = _get_user_approval()
+
+                    LOGGER.info(f"User response: {user_response}")
+                    print("\nProcessing your response...\n")
+
+                    # Resume agent with user's response
+                    for event in agent.stream(Command(resume=user_response), config=agent_config, stream_mode="values"):
+                        if "messages" in event and event["messages"]:
+                            event_messages = event["messages"]
+
+                            for msg in event_messages:
+                                if msg not in logged_messages:
+                                    logged_messages.append(msg)
+                                    LOGGER.info(msg.pretty_repr())
+
+                            result = event
+                else:
+                    LOGGER.warning(f"Unknown interrupt type: {interrupt_info}")
+                    break
 
             # Extract structured output from final result
             structured_response = result.get("structured_response", {})
@@ -244,6 +321,10 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
                 "clusters": result.get("clusters", []),
                 "attraction_coordinates": result.get("attraction_coordinates", {}),
                 "invalid_input": result.get("invalid_input", False),
+                "error_message": result.get("error_message", ""),
+                "organized_days": result.get("organized_days", {}),
+                "has_flexible_attractions": result.get("has_flexible_attractions", False),
+                "itinerary_approved": result.get("itinerary_approved", False),
             }
 
         except StructuredOutputValidationError as e:
@@ -258,7 +339,8 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
                     "attractions_by_day": [],
                     "clusters": [],
                     "attraction_coordinates": {},
-                    "invalid_input": False
+                    "invalid_input": False,
+                    "error_message": ""
                 }
 
             # Add error feedback message for retry
@@ -282,7 +364,8 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
                     "attractions_by_day": [],
                     "clusters": [],
                     "attraction_coordinates": {},
-                    "invalid_input": False
+                    "invalid_input": False,
+                    "error_message": ""
                 }
 
             wait_time = 10 * retry_count  # Exponential backoff
@@ -300,7 +383,8 @@ def day_organizer_node(state: GraphState) -> Dict[str, Any]:
                 "attractions_by_day": [],
                 "clusters": [],
                 "attraction_coordinates": {},
-                "invalid_input": False
+                "invalid_input": False,
+                "error_message": ""
             }
 
 

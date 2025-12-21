@@ -3,7 +3,7 @@ from matplotlib.lines import Line2D
 from shapely.geometry import Point
 import geopandas as gpd
 import contextily as ctx
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 
 def plot_clusters_on_basemap(

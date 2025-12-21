@@ -13,6 +13,8 @@ import sys
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
+from rich.table import Table
+from langgraph.types import Command
 from src.agent.graph import build_graph
 from src.processor.email_processor import check_email_config, send_itinerary_email_sync
 from src.utils.observability import setup_langsmith_tracing
@@ -167,15 +169,8 @@ def main():
 
     # Initialize graph
     try:
-        if os.getenv("ANTHROPIC_API_KEY"):
-            console.print("[dim]Initializing multi-agent system with Claude Sonnet 4...[/dim]")
-            graph = build_graph()
-        elif os.getenv("OPENAI_API_KEY"):
-            console.print("[dim]Initializing multi-agent system with GPT-4...[/dim]")
-            graph = build_graph()
-        else:
-            console.print("[bold red]Error: No LLM configured![/bold red]")
-            sys.exit(1)
+        console.print("[dim]Initializing multi-agent system...[/dim]")
+        graph = build_graph()
 
         console.print("Multi-agent system initialized successfully!\n", style="green")
         console.print("[dim]  -> Agent 1: Day Organizer (uses geographic distance)[/dim]")
@@ -242,6 +237,10 @@ def main():
                     "costs_by_currency": {},
                     "invalid_input": False,
                     "error_message": "",
+                    "organized_days": {},
+                    "has_flexible_attractions": False,
+                    "itinerary_approved": False,
+                    "user_feedback": "",
                 }
 
                 config = {
@@ -288,7 +287,7 @@ def main():
                             console.print("\n[yellow]Email not configured.[/yellow]")
                             console.print(f"[dim]{email_config['message']}[/dim]")
                             if email_config.get("help"):
-                                console.print(f"\n[dim]{email_config['help']}[/dim]")
+                                console.print(f"[dim]{email_config['help']}[/dim]")
                         else:
                             # Get recipient email(s)
                             console.print("[dim]Tip: Separate multiple emails with commas[/dim]")
@@ -305,8 +304,7 @@ def main():
                                 if not destination:
                                     destination = attractions_input.split("\n")[0][:30]
 
-                                emails_str = ", ".join(emails)
-                                console.print(f"\n[dim]Sending to {emails_str}...[/dim]")
+                                console.print(f"\n[dim]Sending to {', '.join(emails)}...[/dim]")
 
                                 result = send_itinerary_email_sync(
                                     document_path=document_path,

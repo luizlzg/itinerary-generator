@@ -10,8 +10,17 @@ from typing import Dict, Any, List, Union, Literal
 from langgraph.types import Send
 from langgraph.graph import END
 from src.agent.state import GraphState
-from src.agent.tools import get_docx_generator
+from src.processor.docx_processor import LocalDocxGenerator
 from src.utils.logger import LOGGER
+
+_docx_generator = None
+
+def get_docx_generator():
+    """Get or create local DOCX generator."""
+    global _docx_generator
+    if _docx_generator is None:
+        _docx_generator = LocalDocxGenerator()
+    return _docx_generator
 
 
 def assign_workers_node(state: GraphState) -> Union[List[Send], Literal["__end__"]]:

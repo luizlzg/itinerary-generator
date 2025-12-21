@@ -24,7 +24,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, List, Union
 from src.utils.logger import LOGGER
 
 
@@ -80,15 +80,13 @@ https://myaccount.google.com/apppasswords
         }
 
     return {
-        "configured": True,
-        "smtp_host": smtp_host,
-        "smtp_user": smtp_user,
+        "configured": True
     }
 
 
 def send_itinerary_email_sync(
     document_path: str,
-    to_emails: Union[str, List[str]],
+    to_emails: List[str],
     destination: str,
     num_days: int,
     language: str = "en",
@@ -98,7 +96,7 @@ def send_itinerary_email_sync(
 
     Args:
         document_path: Path to the itinerary document (DOCX)
-        to_emails: Recipient email address(es) - single string or list of strings
+        to_emails: Recipient email address(es) - list of strings
         destination: Trip destination name
         num_days: Number of days in the itinerary
         language: Language for email content (en, pt-br, es, fr)
@@ -106,18 +104,12 @@ def send_itinerary_email_sync(
     Returns:
         Result dictionary with success status
     """
-    # Normalize to_emails to a list
-    if isinstance(to_emails, str):
-        # Split by comma if multiple emails in one string
-        recipients = [e.strip() for e in to_emails.split(",") if e.strip()]
-    else:
-        recipients = [e.strip() for e in to_emails if e.strip()]
-
-    if not recipients:
+    if not to_emails:
         return {
             "success": False,
             "error": "No valid email addresses provided",
         }
+    
     # Check configuration
     config = check_email_config()
     if not config["configured"]:
@@ -225,7 +217,7 @@ Générateur d'Itinéraires
         msg = MIMEMultipart()
         msg["Subject"] = template["subject"]
         msg["From"] = smtp_from
-        msg["To"] = ", ".join(recipients)
+        msg["To"] = ", ".join(to_emails)
 
         # Add body
         msg.attach(MIMEText(template["body"], "plain", "utf-8"))
@@ -260,14 +252,14 @@ Générateur d'Itinéraires
             server.starttls()
             server.ehlo()
             server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_from, recipients, msg.as_string())
+            server.sendmail(smtp_from, to_emails, msg.as_string())
 
-        recipients_str = ", ".join(recipients)
+        recipients_str = ", ".join(to_emails)
         LOGGER.info(f"Email sent successfully to {recipients_str}")
         return {
             "success": True,
             "message": f"Email sent to {recipients_str}",
-            "recipients": recipients,
+            "recipients": to_emails,
         }
 
     except smtplib.SMTPAuthenticationError as e:

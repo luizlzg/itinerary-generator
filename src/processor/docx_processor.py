@@ -1,18 +1,14 @@
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 import requests
 from PIL import Image
 from io import BytesIO
 import os
-import subprocess
-import platform
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 from src.utils.utilities import plot_clusters_on_basemap
-import numpy as np
 from src.utils.logger import LOGGER
 
 
@@ -69,13 +65,6 @@ def _get_docx_labels(language: str) -> Dict[str, str]:
     return DOCX_LABELS.get(language, DOCX_LABELS["en"])
 
 
-def set_cell_shading(cell, color_hex: str):
-    """Set background shading for a table cell."""
-    shading_elm = OxmlElement('w:shd')
-    shading_elm.set(qn('w:fill'), color_hex)
-    cell._tc.get_or_add_tcPr().append(shading_elm)
-
-
 def add_horizontal_line(paragraph, color: RGBColor = COLORS["primary"], width: float = 1.0):
     """Add a horizontal line below a paragraph."""
     p = paragraph._p
@@ -116,15 +105,6 @@ class LocalDocxGenerator:
         style.paragraph_format.space_after = Pt(8)
         style.paragraph_format.line_spacing = 1.15
 
-        # Configure Title style
-        if 'Title' in doc.styles:
-            title_style = doc.styles['Title']
-            title_style.font.name = 'Calibri Light'
-            title_style.font.size = Pt(32)
-            title_style.font.color.rgb = COLORS["primary"]
-            title_style.font.bold = False
-            title_style.paragraph_format.space_after = Pt(24)
-
         # Configure Heading 1 (Day headers)
         heading1 = doc.styles['Heading 1']
         heading1.font.name = 'Calibri Light'
@@ -152,11 +132,6 @@ class LocalDocxGenerator:
         heading3.paragraph_format.space_before = Pt(12)
         heading3.paragraph_format.space_after = Pt(4)
 
-        # Configure List Bullet style
-        list_style = doc.styles['List Bullet']
-        list_style.font.name = 'Calibri'
-        list_style.font.size = Pt(10)
-        list_style.font.color.rgb = COLORS["text"]
 
     def _add_styled_title(self, doc: Document, title: str, labels: Dict[str, str]):
         """Add a modern styled title with decorative line."""
@@ -335,13 +310,7 @@ class LocalDocxGenerator:
                     elif level == 2:
                         self._add_attraction_header(doc, text)
                     elif level == 3:
-                        # Info section headers - detect by icon keywords
-                        if any(keyword in text.lower() for keyword in ["ticket", "ingresso", "entrada", "billet"]):
-                            self._add_info_section(doc, text)
-                        elif any(keyword in text.lower() for keyword in ["link", "enlace", "lien"]):
-                            self._add_info_section(doc, text)
-                        else:
-                            self._add_info_section(doc, text)
+                        self._add_info_section(doc, text)
 
                 elif block_type == "paragraph":
                     text = block.get("text", "")

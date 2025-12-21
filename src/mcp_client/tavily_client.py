@@ -15,7 +15,7 @@ from src.utils.logger import LOGGER
 
 # MCP imports
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 
 class TavilyMCPClient:
@@ -52,7 +52,7 @@ class TavilyMCPClient:
         try:
             LOGGER.info("Connecting to Tavily remote MCP server...")
 
-            self._client_context = streamablehttp_client(url=self.server_url)
+            self._client_context = streamable_http_client(url=self.server_url)
             streams = await self._client_context.__aenter__()
             read_stream, write_stream, _ = streams
 

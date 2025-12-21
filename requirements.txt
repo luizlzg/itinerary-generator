@@ -3,14 +3,14 @@ langchain>=1.0.0
 langchain-core>=1.0.0
 langchain-openai>=1.0.0
 langchain-anthropic>=0.3.0
-langgraph>=0.2.0
-langgraph-cli[inmem]>=0.4.0  # For local API server and Chat UI
+langgraph>=1.0.0
+
 
 # MCP (Model Context Protocol)
 mcp>=1.0.0
 
 # Observability
-langsmith>=0.1.0
+langsmith>=0.5.0
 
 # API clients
 requests>=2.31.0
@@ -36,6 +36,7 @@ Pillow>=10.0.0  # For image handling in documents
 geopy>=2.4.0
 
 scikit-learn==1.7.2
+k-means-constrained>=0.8.0  # For min/max cluster size constraints
 numpy==2.3.5
 geopandas==1.1.1
 contextily==1.7.0

@@ -83,17 +83,3 @@ def get_tracing_status() -> dict:
         "project": os.getenv("LANGSMITH_PROJECT", "default"),
         "endpoint": os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
     }
-
-
-def print_tracing_summary():
-    """Print a summary of tracing configuration."""
-    status = get_tracing_status()
-
-    if status["enabled"] and status["api_key_set"]:
-        LOGGER.info("=" * 50)
-        LOGGER.info("LANGSMITH TRACING ACTIVE")
-        LOGGER.info(f"  Project: {status['project']}")
-        LOGGER.info(f"  Dashboard: https://smith.langchain.com")
-        LOGGER.info("=" * 50)
-    else:
-        LOGGER.info("LangSmith tracing: DISABLED")

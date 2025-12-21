@@ -2,20 +2,18 @@
 import json
 from langchain.tools import tool, ToolRuntime
 from langchain.messages import ToolMessage
-from typing_extensions import Annotated
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 from src.mcp_client.tavily_client import TavilyMCPClient
-from src.processor.docx_processor import LocalDocxGenerator
 from src.utils.logger import LOGGER
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
 from sklearn.cluster import KMeans
+from k_means_constrained import KMeansConstrained
 import numpy as np
 
 
 # Global clients (initialized on first use)
 _tavily_client = None
-_docx_generator = None
 _geolocator = None
 
 
@@ -37,14 +35,6 @@ def get_tavily_client():
             LOGGER.warning(f"Warning: Tavily not configured: {e}")
             _tavily_client = None
     return _tavily_client
-
-
-def get_docx_generator():
-    """Get or create local DOCX generator."""
-    global _docx_generator
-    if _docx_generator is None:
-        _docx_generator = LocalDocxGenerator()
-    return _docx_generator
 
 
 @tool
@@ -109,7 +99,7 @@ def search_attraction_images(
     try:
         search_data = client.search(
             query,
-            max_results=3,
+            max_results=count,
             search_depth="advanced",
             include_images=True,
             include_image_descriptions=True
@@ -138,19 +128,24 @@ def search_attraction_images(
 
 @tool
 def extract_coordinates(
-    attraction_names: list[str],
+    attractions: dict[str, str],
     runtime: ToolRuntime,
 ) -> Command:
     """
-    Extract geographic coordinates for a list of attractions using Nominatim.
+    Extract geographic coordinates for attractions using Nominatim.
 
     IMPORTANT: This tool updates the graph state with the obtained coordinates.
-    The names you provide will be used EXACTLY as they are in the geocoding API.
-    If some names fail, the tool will return which ones failed so you can try again.
+    The ADDRESS (value) is used for geocoding, but the ORIGINAL NAME (key) is stored.
+    This ensures the final output uses the user's original names in their language.
 
     Args:
-        attraction_names: List of NORMALIZED attraction names for geocoding
-                          (e.g., ["Eiffel Tower, Paris, France", "Louvre Museum, Paris, France"])
+        attractions: Dict mapping original attraction names to their full addresses for geocoding.
+                     Key = Original name as user wrote it (without parentheses, cleaned)
+                     Value = Full address for geocoding (city, country, street if available)
+                     Example: {
+                         "Torre Eiffel": "Eiffel Tower, Champ de Mars, Paris, France",
+                         "Museu do Louvre": "Louvre Museum, Rue de Rivoli, Paris, France"
+                     }
 
     Returns:
         Command object that updates state with coordinates and returns success/failure info
@@ -164,24 +159,25 @@ def extract_coordinates(
     new_coordinates = {}
     failures = []
 
-    for name in attraction_names:
+    for original_name, address in attractions.items():
         try:
-            LOGGER.info(f"Geocoding: {name}")
-            location = geolocator.geocode(name, timeout=10)
+            LOGGER.info(f"Geocoding '{original_name}' using address: {address}")
+            location = geolocator.geocode(address, timeout=10)
 
             if location:
-                new_coordinates[name] = {
+                # Store with original name as key, but geocode using address
+                new_coordinates[original_name] = {
                     "lat": location.latitude,
                     "lon": location.longitude
                 }
-                LOGGER.info(f"✓ Success: {name} -> ({location.latitude}, {location.longitude})")
+                LOGGER.info(f"✓ Success: {original_name} -> ({location.latitude}, {location.longitude})")
             else:
-                failures.append(name)
-                LOGGER.warning(f"✗ Failed: Could not find coordinates for '{name}'")
+                failures.append({"name": original_name, "address": address})
+                LOGGER.warning(f"✗ Failed: Could not find coordinates for '{original_name}' (address: {address})")
 
         except Exception as e:
-            failures.append(name)
-            LOGGER.error(f"✗ Error geocoding '{name}': {e}")
+            failures.append({"name": original_name, "address": address})
+            LOGGER.error(f"✗ Error geocoding '{original_name}': {e}")
 
     # Merge new data with existing
     attraction_coordinates = {**current_coordinates, **new_coordinates}
@@ -299,6 +295,8 @@ def organize_attractions_by_days(
     isolated_days: dict[str, int] = None,
     optimize_order_by_distance: bool = False,
     starting_point: str = None,
+    min_attractions_per_day: int = None,
+    max_attractions_per_day: int = None,
 ) -> Command:
     """
     Organize attractions by days intelligently.
@@ -328,6 +326,18 @@ def organize_attractions_by_days(
                         Must be one of the attractions in the coordinates.
                         Only used when optimize_order_by_distance=True.
                         Example: "Eiffel Tower, Paris" - start the optimized route from Eiffel Tower.
+
+        min_attractions_per_day: Optional minimum number of attractions per day (for flexible attractions).
+                                 Uses constrained K-means to ensure each cluster has at least this many members.
+                                 The number of days/clusters remains unchanged.
+                                 Example: min_attractions_per_day=2 ensures no day has fewer than 2 attractions.
+                                 Note: Only applies to flexible attractions, not isolated days or preferences.
+
+        max_attractions_per_day: Optional maximum number of attractions per day (for flexible attractions).
+                                 Uses constrained K-means to ensure each cluster has at most this many members.
+                                 The number of days/clusters remains unchanged.
+                                 Example: max_attractions_per_day=4 ensures no day has more than 4 attractions.
+                                 Note: Only applies to flexible attractions, not isolated days or preferences.
 
     Returns:
         Command that updates state with clusters and organization info.
@@ -372,6 +382,34 @@ def organize_attractions_by_days(
             return Command(update={
                 "messages": [ToolMessage(
                     json.dumps({"error": error_msg}, ensure_ascii=False),
+                    tool_call_id=runtime.tool_call_id
+                )]
+            })
+
+        # Validate min/max attractions per day
+        if min_attractions_per_day is not None and min_attractions_per_day < 1:
+            return Command(update={
+                "messages": [ToolMessage(
+                    json.dumps({"error": "min_attractions_per_day must be >= 1"}, ensure_ascii=False),
+                    tool_call_id=runtime.tool_call_id
+                )]
+            })
+
+        if max_attractions_per_day is not None and max_attractions_per_day < 1:
+            return Command(update={
+                "messages": [ToolMessage(
+                    json.dumps({"error": "max_attractions_per_day must be >= 1"}, ensure_ascii=False),
+                    tool_call_id=runtime.tool_call_id
+                )]
+            })
+
+        if (min_attractions_per_day is not None and max_attractions_per_day is not None
+                and min_attractions_per_day > max_attractions_per_day):
+            return Command(update={
+                "messages": [ToolMessage(
+                    json.dumps({
+                        "error": f"min_attractions_per_day ({min_attractions_per_day}) cannot be greater than max_attractions_per_day ({max_attractions_per_day})"
+                    }, ensure_ascii=False),
                     tool_call_id=runtime.tool_call_id
                 )]
             })
@@ -442,6 +480,8 @@ def organize_attractions_by_days(
 
             return Command(update={
                 "clusters": clusters,
+                "organized_days": result_by_day,
+                "has_flexible_attractions": False,  # All predefined, no approval needed
                 "messages": [ToolMessage(
                     json.dumps({
                         "mode": "predefined",
@@ -494,7 +534,49 @@ def organize_attractions_by_days(
             n_clusters_flex = min(len(days_for_flex), len(flexible_attractions))
 
             if n_clusters_flex > 0:
-                kmeans = KMeans(n_clusters=n_clusters_flex, random_state=42, n_init=10)
+                # Use constrained K-means if min/max constraints are provided
+                use_constrained = min_attractions_per_day is not None or max_attractions_per_day is not None
+
+                if use_constrained:
+                    # Calculate size constraints
+                    size_min = min_attractions_per_day if min_attractions_per_day else 0
+                    size_max = max_attractions_per_day if max_attractions_per_day else len(flexible_attractions)
+
+                    # Validate constraints are feasible
+                    total_attractions = len(flexible_attractions)
+                    min_possible = size_min * n_clusters_flex
+                    max_possible = size_max * n_clusters_flex
+
+                    if min_possible > total_attractions:
+                        return Command(update={
+                            "messages": [ToolMessage(
+                                json.dumps({
+                                    "error": f"Impossible constraint: min_attractions_per_day={size_min} with {n_clusters_flex} days requires at least {min_possible} attractions, but only {total_attractions} are available."
+                                }, ensure_ascii=False),
+                                tool_call_id=runtime.tool_call_id
+                            )]
+                        })
+
+                    if max_possible < total_attractions:
+                        return Command(update={
+                            "messages": [ToolMessage(
+                                json.dumps({
+                                    "error": f"Impossible constraint: max_attractions_per_day={size_max} with {n_clusters_flex} days can only fit {max_possible} attractions, but {total_attractions} need to be assigned."
+                                }, ensure_ascii=False),
+                                tool_call_id=runtime.tool_call_id
+                            )]
+                        })
+
+                    LOGGER.info(f"Using constrained K-means: size_min={size_min}, size_max={size_max}")
+                    kmeans = KMeansConstrained(
+                        n_clusters=n_clusters_flex,
+                        size_min=size_min,
+                        size_max=size_max,
+                        random_state=42
+                    )
+                else:
+                    kmeans = KMeans(n_clusters=n_clusters_flex, random_state=42, n_init=10)
+
                 clusters_flex = kmeans.fit_predict(coords_flex)
 
                 # Map K-means clusters to available days
@@ -576,15 +658,23 @@ def organize_attractions_by_days(
         message = "Attractions organized by geographic proximity. The order within each day is already optimized to minimize travel."
         if starting_point:
             message += f" Starting from: {starting_point}."
+        if min_attractions_per_day:
+            message += f" Minimum {min_attractions_per_day} attractions per day enforced."
+        if max_attractions_per_day:
+            message += f" Maximum {max_attractions_per_day} attractions per day enforced."
 
         return Command(update={
             "clusters": clusters,
+            "organized_days": result_by_day,
+            "has_flexible_attractions": True,  # K-means was used, approval needed
             "messages": [ToolMessage(
                 json.dumps({
                     "mode": "kmeans" if not isolated_attractions and not attractions_with_pref else "mixed",
                     "message": message,
                     "isolated_days": list(reserved_days) if reserved_days else None,
                     "starting_point": starting_point,
+                    "min_attractions_per_day": min_attractions_per_day,
+                    "max_attractions_per_day": max_attractions_per_day,
                     "days": result_by_day,
                 }, ensure_ascii=False, indent=2),
                 tool_call_id=runtime.tool_call_id
@@ -639,15 +729,186 @@ def return_invalid_input_error(
     })
 
 
+@tool
+def request_itinerary_approval(
+    runtime: ToolRuntime,
+) -> Command:
+    """
+    Request user approval for the organized itinerary BEFORE generating the document.
+
+    IMPORTANT: Use this tool ONLY when has_flexible_attractions=True in the state.
+    The tool reads the organized_days directly from the state (set by organize_attractions_by_days).
+    Do NOT use when ALL attractions have predefined days.
+
+    This tool pauses execution and asks the user to review the proposed day organization.
+    The user can either approve or request changes.
+
+    Args:
+        None - reads organized_days from state automatically.
+
+    Returns:
+        Command with user's response:
+        - If approved: {"approved": True}
+        - If changes requested: {"approved": False, "feedback": "user's feedback"}
+          In this case, use update_itinerary_organization to apply changes, then call this tool again.
+    """
+    # Read organized_days from state
+    organized_days = runtime.state.get("organized_days", {})
+
+    if not organized_days:
+        return Command(update={
+            "messages": [ToolMessage(
+                json.dumps({
+                    "error": "No organized_days found in state. Call organize_attractions_by_days first."
+                }, ensure_ascii=False),
+                tool_call_id=runtime.tool_call_id
+            )]
+        })
+
+    LOGGER.info("Requesting user approval for itinerary organization")
+
+    # Format the itinerary for display
+    itinerary_display = []
+    for day_key in sorted(organized_days.keys(), key=lambda x: int(x.split("_")[1])):
+        day_num = day_key.split("_")[1]
+        attractions = organized_days[day_key]
+        itinerary_display.append({
+            "day": int(day_num),
+            "attractions": attractions
+        })
+
+    # Use interrupt to pause and get user approval
+    user_response = interrupt({
+        "type": "itinerary_approval",
+        "itinerary": itinerary_display,
+    })
+
+    # Process user response
+    # user_response is expected to be a string: "yes"/"ok"/"approved" or feedback text
+    response_lower = str(user_response).lower().strip()
+    is_approved = response_lower in ["yes", "ok", "okay", "approved", "approve", "sim", "si", "oui", "y"]
+
+    if is_approved:
+        LOGGER.info("User approved the itinerary organization")
+        return Command(update={
+            "itinerary_approved": True,
+            "messages": [ToolMessage(
+                json.dumps({
+                    "approved": True,
+                    "message": "User approved the itinerary. Proceed with document generation."
+                }, ensure_ascii=False, indent=2),
+                tool_call_id=runtime.tool_call_id
+            )]
+        })
+    else:
+        LOGGER.info(f"User requested changes: {user_response}")
+        return Command(update={
+            "itinerary_approved": False,
+            "user_feedback": str(user_response),
+            "messages": [ToolMessage(
+                json.dumps({
+                    "approved": False,
+                    "feedback": str(user_response),
+                    "message": "User requested changes. Use update_itinerary_organization to apply the changes, then call request_itinerary_approval again."
+                }, ensure_ascii=False, indent=2),
+                tool_call_id=runtime.tool_call_id
+            )]
+        })
+
+
+@tool
+def update_itinerary_organization(
+    new_organized_days: dict[str, list[str]],
+    runtime: ToolRuntime,
+) -> Command:
+    """
+    Manually update the itinerary organization based on user feedback.
+
+    Use this tool AFTER request_itinerary_approval returns approved=False.
+    This tool updates both organized_days and clusters in the state.
+
+    Args:
+        new_organized_days: The new organization after applying user's feedback.
+                            Format: {"day_1": ["Attraction A", "Attraction B"], "day_2": [...]}
+                            Must include ALL attractions from the original organization.
+
+    Returns:
+        Command that updates state with the new organization and recalculated clusters.
+    """
+    coordinates = runtime.state.get("attraction_coordinates", {})
+    attraction_names = list(coordinates.keys())
+
+    if not coordinates:
+        return Command(update={
+            "messages": [ToolMessage(
+                json.dumps({"error": "No coordinates found in state."}, ensure_ascii=False),
+                tool_call_id=runtime.tool_call_id
+            )]
+        })
+
+    # Validate all attractions are included
+    all_attractions_in_new = set()
+    for day_key, attractions in new_organized_days.items():
+        all_attractions_in_new.update(attractions)
+
+    missing_attractions = set(attraction_names) - all_attractions_in_new
+    if missing_attractions:
+        return Command(update={
+            "messages": [ToolMessage(
+                json.dumps({
+                    "error": f"Missing attractions in new organization: {list(missing_attractions)}"
+                }, ensure_ascii=False),
+                tool_call_id=runtime.tool_call_id
+            )]
+        })
+
+    extra_attractions = all_attractions_in_new - set(attraction_names)
+    if extra_attractions:
+        return Command(update={
+            "messages": [ToolMessage(
+                json.dumps({
+                    "error": f"Unknown attractions in new organization: {list(extra_attractions)}"
+                }, ensure_ascii=False),
+                tool_call_id=runtime.tool_call_id
+            )]
+        })
+
+    # Recalculate clusters based on new organization
+    clusters = np.zeros(len(attraction_names), dtype=int)
+    for day_key, attractions in new_organized_days.items():
+        day_num = int(day_key.split("_")[1]) - 1  # 0-indexed
+        for attraction in attractions:
+            if attraction in attraction_names:
+                idx = attraction_names.index(attraction)
+                clusters[idx] = day_num
+
+    LOGGER.info(f"Updated itinerary organization: {new_organized_days}")
+
+    return Command(update={
+        "clusters": clusters,
+        "organized_days": new_organized_days,
+        "messages": [ToolMessage(
+            json.dumps({
+                "success": True,
+                "message": "Itinerary organization updated. Call request_itinerary_approval to get user confirmation.",
+                "days": new_organized_days
+            }, ensure_ascii=False, indent=2),
+            tool_call_id=runtime.tool_call_id
+        )]
+    })
+
+
 # ============================================================================
 # Tool Lists for Each Agent
 # ============================================================================
 
-# First agent (day organizer) - needs search, coordinate extraction, day organization, and error handling
+# First agent (day organizer) - needs search, coordinate extraction, day organization, approval, update, and error handling
 DAY_ORGANIZER_TOOLS = [
     search_attraction_info,
     extract_coordinates,
     organize_attractions_by_days,
+    request_itinerary_approval,
+    update_itinerary_organization,
     return_invalid_input_error,
 ]
 

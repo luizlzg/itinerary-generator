@@ -121,7 +121,7 @@ The CLI guides you through the itinerary creation process:
 2. **Add preferences** (optional):
    ```
    Versailles needs a full day alone
-   Start from the hotel near Eiffel Tower
+   Colosseum on day 2
    ```
 
 3. **Select options**:
@@ -210,10 +210,6 @@ The agent searches for official addresses before geocoding to ensure accurate co
 This prevents errors with attractions that have namesakes in other cities.
 
 ## Troubleshooting
-
-**jsonschema-rs build error**: This occurs on Python 3.14+ without Rust installed. Either:
-- Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- Use Python 3.12 or 3.13 where pre-built wheels are available
 
 **Geocoding failures**: The agent will search for official addresses before geocoding. If issues persist, ensure attraction names include city and country.
 

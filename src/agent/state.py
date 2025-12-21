@@ -9,6 +9,8 @@ from src.utils.utilities import merge_dicts, replace_value
 # TypedDict Models for Structured Outputs
 # ============================================================================
 
+# First agent (day organization) output model
+
 class DayOrganization(TypedDict):
     """Organization of attractions for a single day."""
     day: int  # Day number (1, 2, 3, etc.)
@@ -20,6 +22,8 @@ class OrganizedItinerary(TypedDict):
     document_title: str  # Creative title for the document
     attractions_by_day: List[DayOrganization]
 
+
+# Second agent (attraction research) output models
 
 class ImageInfo(TypedDict):
     """Image information for an attraction."""
@@ -55,7 +59,6 @@ class AttractionResearchResult(TypedDict):
 
 class DayResearchResult(TypedDict):
     """Research results for all attractions in a day - output from second agent."""
-    day_number: int  # Day number
     attractions: List[AttractionResearchResult]  # All researched attractions for this day
 
 
@@ -81,6 +84,14 @@ class GraphState(TypedDict):
     # First agent output (day organizer)
     document_title: str  # Generated document title
     attractions_by_day: List[Dict[str, Any]]  # List of {"day": int, "attractions": List[str]}
+
+    # Organized days from K-means (for approval flow)
+    organized_days: Dict[str, List[str]]  # {"day_1": ["Attraction A", ...], "day_2": [...]}
+    has_flexible_attractions: bool  # True if K-means was used (not all predefined)
+
+    # Itinerary approval (for flexible attractions)
+    itinerary_approved: bool  # True when user approves the organization
+    user_feedback: str  # User's feedback if they request changes
 
     # Second agent outputs (accumulated from parallel executions - one per day)
     # Using Annotated with operator.add to accumulate results from parallel Send() calls
