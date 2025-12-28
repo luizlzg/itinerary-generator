@@ -4,13 +4,16 @@ A multi-agent LangGraph system that transforms a list of tourist attractions int
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
 ![LangChain](https://img.shields.io/badge/langchain-1.0-purple)
-![LangGraph](https://img.shields.io/badge/langgraph-0.2+-green)
+![LangGraph](https://img.shields.io/badge/langgraph-1.0+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
 ## Features
 
 - **Intelligent Day Organization**: K-means clustering groups attractions by geographic proximity
+- **Constrained Clustering**: Set min/max attractions per day while keeping the number of days fixed
+- **User Approval Flow**: Review and adjust K-means organized itineraries before proceeding
 - **Address-Based Geocoding**: Searches for official addresses before geocoding to ensure accuracy
+- **Multilingual Output**: Preserves attraction names in user's original language on maps and documents
 - **User Preference Handling**: Supports isolated days, specific day assignments, or flexible grouping
 - **Parallel Research**: Multiple agent instances research attractions concurrently
 - **Rich Attraction Details**: Descriptions, opening hours, costs, ticket links, and images
@@ -29,9 +32,11 @@ User Input (attractions list)
 ┌─────────────────────────────┐
 │  Day Organizer Agent        │
 │  1. Search official address │  ← Uses web search for accurate geocoding
-│  2. Extract coordinates     │
-│  3. K-means clustering      │
-│  4. Respect user prefs      │
+│  2. Build name→address map  │  ← Preserves user's language in keys
+│  3. Extract coordinates     │
+│  4. K-means clustering      │  ← Supports min/max constraints
+│  5. Request user approval   │  ← Interactive review for flexible attractions
+│  6. Respect user prefs      │
 └─────────────────────────────┘
          │
          ▼
@@ -53,10 +58,10 @@ User Input (attractions list)
 ## Tech Stack
 
 - **LangChain 1.0** / **LangGraph** - Agent orchestration with TypedDict state schemas
-- **Claude Sonnet 4** (Anthropic) or **GPT-4** (OpenAI) - LLM providers
+- **Claude Sonnet 4.5** (Anthropic) or **GPT-4** (OpenAI) - LLM providers
 - **Tavily MCP** - Web search and image retrieval
 - **GeoPy** - Geocoding via Nominatim
-- **scikit-learn** - K-means clustering for geographic grouping
+- **scikit-learn** / **k-means-constrained** - K-means clustering with size constraints
 - **GeoPandas / Matplotlib** - Route map visualization
 - **python-docx** - Document generation
 
@@ -111,24 +116,49 @@ The CLI guides you through the itinerary creation process:
 
 1. **Enter attractions** (one per line, end with "END"):
    ```
-   Eiffel Tower, Paris
-   Louvre Museum, Paris
-   Notre-Dame Cathedral, Paris
-   Versailles Palace
+   Torre Eiffel
+   Museu do Louvre
+   Catedral de Notre-Dame
+   Palácio de Versalhes
    END
    ```
 
 2. **Add preferences** (optional):
    ```
-   Versailles needs a full day alone
-   Colosseum on day 2
+   Versalhes precisa de um dia inteiro
+   No máximo 3 atrações por dia
    ```
 
 3. **Select options**:
    - Number of days
    - Output language (en, pt-br, es, fr)
 
-4. **Receive output**:
+4. **Review organization** (for flexible attractions):
+   ```
+   ============================================================
+   PROPOSED ITINERARY ORGANIZATION
+   ============================================================
+
+   Day 1:
+     • Torre Eiffel
+     • Catedral de Notre-Dame
+
+   Day 2:
+     • Museu do Louvre
+
+   Day 3:
+     • Palácio de Versalhes
+
+   ============================================================
+
+   Is this organization okay?
+   Type 'yes' to approve, or describe what changes you'd like.
+   Examples: 'move Louvre to day 2', 'swap day 1 and day 3'
+
+   Your response:
+   ```
+
+5. **Receive output**:
    - Generated DOCX saved to `.results/`
    - Cost summary by currency displayed
    - Option to send via email
@@ -143,6 +173,35 @@ The Day Organizer understands three types of user intent:
 | **Specific Day** | "Eiffel Tower on day 1" | Assigned to day, can share with others |
 | **Flexible** | Just listing attractions | Grouped by geographic proximity |
 
+### Clustering Constraints
+
+You can specify min/max attractions per day:
+
+| Constraint | Example | Behavior |
+|------------|---------|----------|
+| **Minimum** | "at least 2 per day" | Each day has >= 2 attractions |
+| **Maximum** | "no more than 3 per day" | Each day has <= 3 attractions |
+| **Both** | "between 2 and 4 per day" | Days have 2-4 attractions |
+
+The number of days remains fixed; only cluster sizes are constrained using `k-means-constrained`.
+
+## Multilingual Support
+
+The system preserves attraction names in your language:
+
+1. **Input**: You provide names in your language (e.g., "Torre Eiffel", "Museu do Louvre")
+2. **Geocoding**: Agent finds English addresses for accurate coordinates
+3. **Storage**: Your original names are used as keys
+4. **Output**: Maps and documents display names in your language
+
+Example mapping:
+```python
+{
+    "Torre Eiffel": "Eiffel Tower, Champ de Mars, Paris, France",
+    "Museu do Louvre": "Louvre Museum, Rue de Rivoli, Paris, France"
+}
+```
+
 ## Project Structure
 
 ```
@@ -156,7 +215,7 @@ itinerary-generator/
 │   │   ├── graph.py                    # LangGraph workflow definition
 │   │   ├── state.py                    # TypedDict state schemas
 │   │   ├── agent_definition.py         # Agent creation and node functions
-│   │   ├── tools.py                    # Search, geocoding, clustering tools
+│   │   ├── tools.py                    # Search, geocoding, clustering, approval tools
 │   │   ├── prompts.py                  # System prompts for agents
 │   │   └── other_nodes.py              # Helper nodes (assign_workers, build_document)
 │   │
@@ -178,6 +237,17 @@ itinerary-generator/
 └── .results/                            # Generated DOCX files
 ```
 
+## Available Tools
+
+| Tool | Purpose |
+|------|---------|
+| `search_attraction_info` | Web search for addresses and information |
+| `extract_coordinates` | Geocode attractions (name→address mapping) |
+| `organize_attractions_by_days` | K-means clustering with constraints |
+| `request_itinerary_approval` | Pause for user review (uses LangGraph interrupt) |
+| `update_itinerary_organization` | Apply user's requested changes |
+| `return_invalid_input_error` | Handle invalid/unrelated input |
+
 ## Output Example
 
 The generated DOCX includes:
@@ -189,7 +259,7 @@ The generated DOCX includes:
   - Embedded images with captions
   - Ticket purchase links
   - Estimated costs per person
-- **Visual route map** with color-coded day markers
+- **Visual route map** with color-coded day markers (names in your language)
 - **Cost summary** grouped by currency
 
 ## API Requirements
@@ -204,16 +274,19 @@ The generated DOCX includes:
 The agent searches for official addresses before geocoding to ensure accurate coordinates:
 
 1. **Search**: Queries "[attraction] [city] [country] official address"
-2. **Extract**: Gets street/area from search results
+2. **Map**: Creates `{original_name: english_address}` dict
 3. **Geocode**: Uses full address like "Colosseum, Piazza del Colosseo, Rome, Italy"
+4. **Store**: Coordinates are saved with original name as key
 
-This prevents errors with attractions that have namesakes in other cities.
+This prevents errors with attractions that have namesakes in other cities and preserves your language in outputs.
 
 ## Troubleshooting
 
 **Geocoding failures**: The agent will search for official addresses before geocoding. If issues persist, ensure attraction names include city and country.
 
 **Rate limits**: The system includes exponential backoff retry. For high volume, consider adding delays between requests.
+
+**Approval not requested**: The middleware validates that `request_itinerary_approval` is called when K-means clustering is used. If skipped, the agent will retry.
 
 ## License
 
